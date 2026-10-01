@@ -1,0 +1,75 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: gajok-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gajok_db
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d gajok_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    container_name: gajok-localstack
+    restart: unless-stopped
+    environment:
+      - SERVICES=s3,sqs
+      - DEFAULT_REGION=ap-northeast-2
+      - PERSISTENCE=1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+
+  app-api:
+    build: .
+    container_name: gajok-app-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_MODE: api
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gajok_db
+      SPRING_DATASOURCE_USERNAME: dev
+      SPRING_DATASOURCE_PASSWORD: dev
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - "8080:8080"
+    profiles: ["full"]
+
+  app-worker:
+    build: .
+    container_name: gajok-app-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_MODE: worker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gajok_db
+      SPRING_DATASOURCE_USERNAME: dev
+      SPRING_DATASOURCE_PASSWORD: dev
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    profiles: ["full"]
+
+volumes:
+  pgdata:
+  localstack-data:
