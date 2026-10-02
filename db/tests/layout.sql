@@ -1,5 +1,8 @@
 -- layout 모듈 테스트. 전체 실행: ./scripts/db.sh test
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
+--
+-- TODO(승인 절차 제거, review_auto_publish_patch): T63 이 삭제된 approval 테이블을 참조한다
+-- (approved_pages/changes_requested_pages 컬럼도 v_issue_progress 에서 제거됨). 다시 작성 필요.
 \echo == layout
 
 \echo T47 조판 큐: closing 이면 노출, 조판 진행/완료 또는 실패 3회면 제외

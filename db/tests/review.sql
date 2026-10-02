@@ -1,5 +1,9 @@
 -- review 모듈 테스트. 전체 실행: ./scripts/db.sh test
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
+--
+-- TODO(승인 절차 제거, review_auto_publish_patch): 이 파일 전체(T54, T62)가 삭제된 approval 테이블과
+-- 'approved' 상태를 테스트한다. review_window_hours 경과 시 자동 printing 전환 / can_request_relayout
+-- / override 는 review 상태에서만 허용 쪽으로 다시 작성 필요. 조판엔진 담당자 검토 바람.
 \echo == review
 
 \echo T54 승인 버전(S4): 수정이 생기면 승인 무효, 재승인 시 유효, 승인 후 수정은 검토로 복귀, 인쇄 중 수정 거부

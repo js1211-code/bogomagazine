@@ -2,6 +2,9 @@
 -- 막혀야 하는 것(복합 외래키 / 트리거)은 막히는지, 정상 데이터는 막히지 않는지(과잉 차단 방지),
 -- 의도적으로 허용한 것은 허용되는지, 복합 키에서도 SET NULL / CASCADE 가 의도대로 동작하는지 확인한다.
 -- 전체 실행: ./scripts/db.sh test. 하나의 트랜잭션 안에서 공통 준비물을 만들고 끝에 ROLLBACK 한다.
+--
+-- TODO(승인 절차 제거, review_auto_publish_patch): T104/T116 이 삭제된 approval 테이블로 복합 외래키/
+-- CASCADE 정합성을 테스트한다. approval 이 없어졌으니 override 쪽 정합성 테스트로 대체하거나 삭제 필요.
 \echo == integrity
 BEGIN;
 

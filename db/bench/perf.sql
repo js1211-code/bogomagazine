@@ -56,7 +56,7 @@ EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT * FROM v_issue_progress WHERE group
 \echo --- P3 마감 대상 찾기 (status=collecting AND close_at<=now)
 EXPLAIN (ANALYZE, COSTS OFF) SELECT i.id FROM issue i WHERE i.status = 'collecting' AND i.close_at <= now();
 
-\echo --- P4 인덱스 없는 FK 조회 (approval.page_id, print_job.issue_id, print_order.print_job_id)
+\echo --- P4 인덱스 없는 FK 조회 (override.issue_id, print_job.issue_id, print_order.print_job_id 등)
 SELECT conrelid::regclass AS table_name, a.attname AS fk_column,
        NOT EXISTS (SELECT 1 FROM pg_index ix WHERE ix.indrelid = c.conrelid AND ix.indkey[0] = a.attnum) AS no_leading_index
   FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]

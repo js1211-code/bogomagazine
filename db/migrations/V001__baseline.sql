@@ -3,8 +3,10 @@
 -- 함수/뷰/트리거는 R__*.sql 에서 관리한다.
 --
 -- 서비스: 가족 그룹(방장 + 구성원)이 앱 안 피드에 사진/글을 올리면, 매월 그 달의 글을 모아 신문(월간지)으로 자동 조판하고
---         가족이 검토/승인한 뒤 인쇄해서 조부모님께 우편으로 보낸다. 로그인은 카카오/애플만. 조부모님은 앱 사용자가 아니다.
--- 흐름: 피드 게시 -> (월 마감) 선별 -> 자동 조판 -> 가족 검토/수정 -> 승인 -> 미리보기 -> 인쇄 -> 배송
+--         가족이 검토(미리보기/재조판 요청)한 뒤 자동으로 인쇄해서 조부모님께 우편으로 보낸다. 승인 절차는 없다:
+--         조판 완료 후 그룹별 review_window_hours(기본 24시간) 안에만 재조판을 요청할 수 있고, 지나면 자동으로 인쇄 단계로 넘어간다.
+--         로그인은 카카오/애플만. 조부모님은 앱 사용자가 아니다.
+-- 흐름: 피드 게시 -> (월 마감) 선별 -> 자동 조판 -> 가족 검토(미리보기/재조판 요청, 시간 제한) -> 자동 인쇄 전환 -> 인쇄 -> 배송
 --
 -- 무결성 원칙: 같은 사실이 두 곳에 있으면(예: 사진의 그룹 = 게시물의 그룹) 복합 외래키로 서로 어긋나지 못하게 한다.
 --   복합 외래키는 컬럼 중 하나가 NULL 이면 검사를 건너뛴다 (호 전체 승인, 게시물이 지워진 텍스트 등이 이에 해당).
@@ -96,6 +98,8 @@ CREATE TABLE family_group (
     -- true: 선별 가능한 사진이 min_photos 미만이면 자동 미발행(skipped)
     -- false: 부족해도 마감하고 조판이 큰 사진/여백으로 채움
     auto_skip_below_min boolean NOT NULL DEFAULT true,
+    -- 조판 완료(review 진입) 후 미리보기 + 재조판 요청이 가능한 시간. 지나면 자동으로 printing 전환 (advance_reviewed_issues)
+    review_window_hours int NOT NULL DEFAULT 24 CHECK (review_window_hours > 0),
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -162,11 +166,11 @@ CREATE TABLE issue (
     period_start    date NOT NULL,          -- 이 호에 실리는 게시물의 기간 (그룹 타임존 기준 날짜)
     period_end      date NOT NULL,
     -- 상태 흐름은 아래 issue_status_transition 과 R__020_issues_lifecycle.sql 참고
-    --   collecting(수집) -> closing(마감 처리: 선별+조판) -> review(검토) -> approved(승인)
-    --   -> printing(인쇄 제작) -> printed(인쇄 완료/배송) -> archived
+    --   collecting(수집) -> closing(마감 처리: 선별+조판) -> review(검토: 미리보기/재조판 요청 기간)
+    --   -> printing(인쇄 제작, review_window_hours 경과 시 자동 전환) -> printed(인쇄 완료/배송) -> archived
     --   수집량 미달 시 collecting -> skipped(이번 달 미발행) -> archived
     status          text NOT NULL DEFAULT 'collecting'
-        CHECK (status IN ('collecting','closing','review','approved','printing',
+        CHECK (status IN ('collecting','closing','review','printing',
                           'printed','skipped','archived')),
     status_changed_at timestamptz NOT NULL DEFAULT now(),
     close_at        timestamptz NOT NULL,     -- 수집 마감 예정 시각
@@ -368,7 +372,8 @@ CREATE INDEX ix_placement_media ON placement (media_id);
 CREATE INDEX ix_placement_text_block ON placement (text_block_id);
 
 -- =========================================================
--- 6. 협업: 수동 보정 / 락 / 승인
+-- 6. 협업: 수동 보정 / 락
+--    승인 절차는 없다 (review_window_hours 안에 재조판 요청만 가능, 지나면 자동 printing 전환)
 -- =========================================================
 CREATE TABLE override (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -389,26 +394,6 @@ CREATE TABLE page_lock (
     page_id     uuid PRIMARY KEY REFERENCES page(id) ON DELETE CASCADE,
     user_id     uuid NOT NULL REFERENCES app_user(id),
     expires_at  timestamptz NOT NULL
-);
-
-CREATE TABLE approval (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    seq         bigint GENERATED ALWAYS AS IDENTITY,   -- 최신 판정 기준 (created_at 아님)
-    issue_id    uuid NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
-    page_id     uuid,                          -- NULL 이면 호 전체
-    -- 어느 버전을 승인했는지. R__040_review_guards.sql 의 트리거가 비워 두면 자동으로 채운다.
-    -- 이후에 이 run 에서 seq 가 더 큰 override 가 이 페이지에 생기면 승인은 무효(stale)로 본다.
-    run_id        uuid,
-    override_seq  bigint,
-    user_id     uuid NOT NULL REFERENCES app_user(id),
-    status      text NOT NULL CHECK (status IN ('approved','changes_requested')),
-    comment     text,
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    -- 페이지를 승인하면 그 페이지의 조판(run_id)도 반드시 같이 기록된다 (복합 외래키는 NULL 이 있으면 검사를 건너뛰므로 따로 막는다)
-    CHECK (page_id IS NULL OR run_id IS NOT NULL),
-    -- 승인의 호 / 조판 / 페이지가 서로 어긋나지 않게 한다
-    FOREIGN KEY (run_id, issue_id) REFERENCES layout_run (id, issue_id) ON DELETE CASCADE,
-    FOREIGN KEY (page_id, run_id)  REFERENCES page (id, run_id) ON DELETE CASCADE
 );
 
 -- =========================================================
@@ -501,9 +486,6 @@ CREATE INDEX ix_issue_media_media    ON issue_media (media_id);
 CREATE INDEX ix_text_block_issue     ON text_block (issue_id);
 CREATE INDEX ix_text_block_post      ON text_block (post_id);
 -- 진행 뷰가 페이지/호/인쇄 단위로 "가장 최근 1건"을 찾는 경로
-CREATE INDEX ix_approval_page        ON approval (page_id, seq DESC);
-CREATE INDEX ix_approval_issue       ON approval (issue_id);
-CREATE INDEX ix_approval_run         ON approval (run_id);
 CREATE INDEX ix_override_issue       ON override (issue_id);
 CREATE INDEX ix_print_job_issue      ON print_job (issue_id, seq DESC);
 CREATE INDEX ix_print_job_run        ON print_job (run_id);
@@ -517,7 +499,7 @@ CREATE INDEX ix_print_order_address  ON print_order (delivery_address_id);
 -- =========================================================
 COMMENT ON TABLE app_user                IS 'module:identity | 사용자. 탈퇴하면 익명화하고 행은 유지한다';
 COMMENT ON TABLE auth_identity           IS 'module:identity | 로그인 수단(카카오/애플). (provider, provider_uid)로 식별';
-COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id)과 월 마감 정책(마감일, 타임존, 미달 시 자동 미발행)';
+COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id)과 월 마감/검토 정책(마감일, 타임존, 미달 시 자동 미발행, 재조판 요청 가능 시간)';
 COMMENT ON TABLE family_member           IS 'module:groups | 그룹 구성원. 나가도 행은 남기고 left_at 만 채운다';
 COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시, 만료, 사용 횟수, 취소). 방장만 만든다';
 COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지(주소만, 로그인 없음). 주문에는 복사본을 남긴다';
@@ -537,8 +519,7 @@ COMMENT ON TABLE layout_run              IS 'module:layout | 자동 조판 실�
 COMMENT ON TABLE page                    IS 'module:layout | 조판 결과의 페이지';
 COMMENT ON TABLE placement               IS 'module:layout | 페이지 위 요소 배치(mm 단위)';
 COMMENT ON TABLE preview                 IS 'module:layout | 페이지 미리보기 렌더 결과';
-COMMENT ON TABLE approval                IS 'module:review | 페이지 승인/수정 요청(승인한 조판 버전을 기록)';
-COMMENT ON TABLE override                IS 'module:review | 사람의 수정 로그(seq 순서)';
+COMMENT ON TABLE override                IS 'module:review | 사람의 수정 로그(seq 순서). 재조판 요청 시 반영';
 COMMENT ON TABLE page_lock               IS 'module:review | 페이지 편집 락';
 COMMENT ON TABLE print_job               IS 'module:printing | PDF 생성/프리플라이트 작업';
 COMMENT ON TABLE print_order             IS 'module:printing | 인쇄 주문 1건 = 배송지 1곳. 받는 사람/주소는 주문 시점의 복사본';

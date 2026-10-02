@@ -1,5 +1,9 @@
 -- issues 모듈 테스트. 전체 실행: ./scripts/db.sh test
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
+--
+-- TODO(승인 절차 제거, review_auto_publish_patch): T32/T33/T55/T55b 가 삭제된 approval 테이블과
+-- 'approved' 상태, approved_pages 등 v_issue_progress 컬럼을 참조한다. review_window_hours 경과 후
+-- advance_reviewed_issues() 자동 전환 / review_deadline / can_request_relayout 기준으로 다시 작성 필요.
 \echo == issues
 
 \echo T01 issue: min_photos > max_photos 거부

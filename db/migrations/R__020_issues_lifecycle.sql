@@ -12,14 +12,12 @@ DELETE FROM issue_status_transition;
 INSERT INTO issue_status_transition (from_status, to_status, note) VALUES
     ('collecting', 'closing',    '마감: 선별 + 자동 조판 시작'),
     ('collecting', 'skipped',    '수집량 미달 등으로 이번 달 미발행'),
-    ('closing',    'review',     '조판 완료, 가족 검토 시작'),
+    ('closing',    'review',     '조판 완료, 미리보기·재조판 요청 기간(review_window_hours) 시작'),
     ('closing',    'collecting', '마감 취소(재오픈) - 새 close_at 필요'),
-    ('review',     'closing',    '수정 요청으로 재조판'),
-    ('review',     'approved',   '전 페이지 승인'),
-    ('approved',   'review',     '승인 철회 / 승인 후 수정 발생'),
-    ('approved',   'printing',   'PDF 생성 및 인쇄 의뢰'),
+    ('review',     'closing',    '재조판 요청으로 다시 조판'),
+    ('review',     'printing',   '검토 기간(review_window_hours) 경과 - 자동 전환, 승인 절차 없음 (advance_reviewed_issues)'),
     ('printing',   'printed',    '인쇄 완료/출고'),
-    ('printing',   'approved',   '프리플라이트 실패 등으로 복귀'),
+    ('printing',   'review',     '프리플라이트 실패 등으로 복귀 (재조판 요청 가능하도록)'),
     ('printed',    'archived',   '보관'),
     ('skipped',    'closing',    '관리자 강제 발행 (사진이 부족해도 조판)'),
     ('skipped',    'collecting', '재오픈 - 새 close_at 필요'),
@@ -31,7 +29,7 @@ INSERT INTO issue_status_transition (from_status, to_status, note) VALUES
 --    사전조건
 --      collecting 으로 되돌릴 때 : p_close_at 이 미래여야 함 (안 그러면 배치가 곧바로 다시 닫음)
 --      review   : 완료(done)된 조판이 있어야 함
---      approved / printing : 최신 조판의 모든 페이지가 승인(최신 버전 기준)되어 있어야 함
+--      printing : review 에서 전이표를 통해서만 들어옴 (승인 절차 없음, advance_reviewed_issues 가 자동 호출)
 --      printed  : 최신 조판+최신 수정 번호와 일치하는 ready 인쇄 작업이 있어야 함
 --    closing 으로 들어가거나 closing 에서 재오픈하면 이전 조판 실행은 superseded 처리
 -- =========================================================
@@ -45,8 +43,6 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_from text;
     v_run  uuid;
-    v_total int;
-    v_approved int;
 BEGIN
     SELECT status INTO v_from FROM issue WHERE id = p_issue FOR UPDATE;
     IF NOT FOUND THEN
@@ -71,16 +67,6 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    IF p_to IN ('approved', 'printing') THEN
-        SELECT total_pages, approved_pages INTO v_total, v_approved
-          FROM v_issue_progress WHERE issue_id = p_issue;
-        IF COALESCE(v_total, 0) = 0 OR v_approved < v_total THEN
-            RAISE EXCEPTION 'cannot enter %: % of % pages approved (current version)',
-                p_to, COALESCE(v_approved, 0), COALESCE(v_total, 0)
-                USING ERRCODE = 'check_violation';
-        END IF;
-    END IF;
-
     IF p_to = 'printed' THEN
         SELECT id INTO v_run FROM layout_run
          WHERE issue_id = p_issue AND status = 'done'
@@ -90,7 +76,7 @@ BEGIN
                  WHERE j.issue_id = p_issue AND j.status = 'ready' AND j.run_id = v_run
                    AND j.override_seq >= COALESCE(
                          (SELECT max(o.seq) FROM override o WHERE o.run_id = j.run_id), 0)) THEN
-            RAISE EXCEPTION 'cannot enter printed: no ready print job for the latest approved version'
+            RAISE EXCEPTION 'cannot enter printed: no ready print job for the latest version'
                 USING ERRCODE = 'check_violation';
         END IF;
     END IF;
@@ -143,7 +129,8 @@ CREATE TRIGGER trg_issue_status_guard
 -- 4. 진행상태 조회 뷰
 --    current_step : 사용자에게 보여줄 세부 단계 (status 보다 세분화)
 --    progress_pct : 0~100 (대략적인 진행률, UI 진행바용)
---    승인은 "페이지별 가장 최근 승인 1건"이고, 그 뒤에 이 페이지에 수정(override)이 있으면 stale(무효)
+--    review_deadline / can_request_relayout : 승인 절차가 없으므로 "언제까지 미리보기·재조판 요청이 가능한지"를
+--      그룹의 review_window_hours 로 계산해 둔다. 지나면 advance_reviewed_issues() 가 자동으로 printing 전환한다.
 --    마감 자동 재시도 상한(5)은 batch.sql 과 같은 값
 -- =========================================================
 DROP VIEW IF EXISTS v_issue_progress;
@@ -175,9 +162,11 @@ SELECT
     lr.run_id           AS latest_run_id,
     lr.run_status       AS latest_run_status,
     COALESCE(pgs.total_pages, 0)              AS total_pages,
-    COALESCE(pgs.approved_pages, 0)           AS approved_pages,
-    COALESCE(pgs.changes_requested_pages, 0)  AS changes_requested_pages,
-    COALESCE(pgs.stale_approval_pages, 0)     AS stale_approval_pages,
+
+    i.status_changed_at + make_interval(hours => g.review_window_hours) AS review_deadline,
+    (i.status = 'review'
+        AND now() < i.status_changed_at + make_interval(hours => g.review_window_hours)
+    ) AS can_request_relayout,
 
     pj.print_job_status,
     po.print_order_status,
@@ -190,9 +179,7 @@ SELECT
         WHEN 'selecting'        THEN 30
         WHEN 'composing'        THEN 40
         WHEN 'compose_failed'   THEN 40
-        WHEN 'reviewing'        THEN round(50 + 30.0 * COALESCE(pgs.approved_pages, 0)
-                                                 / NULLIF(pgs.total_pages, 0))
-        WHEN 'approved'         THEN 85
+        WHEN 'reviewing'        THEN 70
         WHEN 'printing'         THEN 90
         WHEN 'preflight_failed' THEN 88
         WHEN 'shipping'         THEN 95
@@ -225,27 +212,8 @@ LEFT JOIN LATERAL (
      ORDER BY seq DESC LIMIT 1
 ) lr ON true
 LEFT JOIN LATERAL (
-    SELECT count(*)::int AS total_pages,
-           count(*) FILTER (WHERE la.status = 'approved' AND NOT la.stale)::int AS approved_pages,
-           count(*) FILTER (WHERE la.status = 'changes_requested')::int         AS changes_requested_pages,
-           count(*) FILTER (WHERE la.status = 'approved' AND la.stale)::int     AS stale_approval_pages
+    SELECT count(*)::int AS total_pages
       FROM page pg
-      LEFT JOIN LATERAL (
-          SELECT a.status,
-                 EXISTS (
-                     SELECT 1 FROM override o
-                      WHERE o.run_id = pg.run_id
-                        AND o.seq > COALESCE(a.override_seq, 0)
-                        AND ((o.target_type = 'page' AND o.target_id = pg.id)
-                          OR (o.target_type = 'placement'
-                              AND o.target_id IN (SELECT pl.id FROM placement pl WHERE pl.page_id = pg.id))
-                          OR (o.target_type = 'media'
-                              AND o.target_id IN (SELECT pl.media_id FROM placement pl
-                                                   WHERE pl.page_id = pg.id AND pl.media_id IS NOT NULL)))
-                 ) AS stale
-            FROM approval a
-           WHERE a.page_id = pg.id
-           ORDER BY a.seq DESC LIMIT 1) la ON true
      WHERE pg.run_id = lr.run_id
 ) pgs ON true
 LEFT JOIN LATERAL (
@@ -266,7 +234,6 @@ CROSS JOIN LATERAL (
                  WHEN lr.run_id IS NULL AND md.selected_media = 0 THEN 'selecting'
                  ELSE 'composing' END
         WHEN 'review'   THEN 'reviewing'
-        WHEN 'approved' THEN 'approved'
         WHEN 'printing' THEN
             CASE WHEN pj.print_job_status IN ('preflight_failed','failed') THEN 'preflight_failed'
                  ELSE 'printing' END
