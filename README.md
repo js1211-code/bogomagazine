@@ -38,7 +38,7 @@
 ├─ .github/              CI 워크플로, PR 템플릿
 ├─ docker-compose.yml          앱 개발용 (기존): postgres(gajok_db:5432), localstack, app-api/app-worker
 ├─ docker-compose.dbtest.yml   DB 설계 검증용 PostgreSQL(5433) + Flyway. db.sh 가 사용 (로컬/CI 공용)
-├─ Dockerfile, .env, .idea     앱 쪽 기존 파일
+├─ Dockerfile, .env.example   앱 쪽 기존 파일 (.env 는 .env.example 복사해서 로컬에만 둘 것, git 추적 안 함)
 └─ TODO.md               보류/결정 대기/구현 예정
 ```
 

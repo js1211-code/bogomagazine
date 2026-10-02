@@ -37,7 +37,10 @@ out/
 /.nb-gradle/
 
 ### VS Code ###
-.vscode/
+# 팀 공용 설정(extensions.json, settings.json)은 추적하고, 개인 설정만 무시한다
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 
 ### Mac OS ###
 .DS_Store
