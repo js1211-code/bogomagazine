@@ -38,3 +38,20 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Mac OS ###
+.DS_Store
+
+### 비밀 값 / 로컬 설정 ###
+.env
+.env.*
+!.env.example
+*.local
+.claude/settings.local.json
+
+### 산출물 ###
+Thumbs.db
+*.log
+tmp/
+node_modules/
+__pycache__/
