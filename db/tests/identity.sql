@@ -50,23 +50,27 @@ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T81 익명화: 방장은 방장을 넘기기 전에는 거부, 넘긴 뒤에는 가능, 없는 사용자는 예외
+\echo T81 익명화: 방장이 탈퇴하면 가장 먼저 합류한 구성원에게 자동으로 방장이 넘어감(FAM-11), 혼자뿐이면 거부, 없는 사용자는 예외
 BEGIN;
 DO $$
 DECLARE u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
         g  constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        solo uuid := gen_random_uuid();
+        g_solo uuid;
 BEGIN
+  PERFORM * FROM anonymize_user(u1);
+  ASSERT (SELECT name = '탈퇴한 사용자' FROM app_user WHERE id = u1), 'T81 방장 탈퇴 시 익명화되어야 함';
+  ASSERT (SELECT owner_id = u2 FROM family_group WHERE id = g), 'T81 방장이 가장 먼저 합류한 구성원(u2)에게 자동 이전되어야 함';
+
+  -- 혼자뿐인 그룹의 방장은 거부한다(마지막 구성원 탈퇴 정책은 아직 결정 전, TODO.md)
+  INSERT INTO app_user (id, name) VALUES (solo, '혼자');
+  g_solo := create_family_group('혼자네', solo);
   BEGIN
-    PERFORM * FROM anonymize_user(u1);
-    RAISE EXCEPTION 'T81 failed: 방장이 익명화됨';
+    PERFORM * FROM anonymize_user(solo);
+    RAISE EXCEPTION 'T81 failed: 혼자뿐인 방장이 익명화됨';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
-  ASSERT (SELECT email IS NULL AND name = '엄마' FROM app_user WHERE id = u1), 'T81 거부했는데 바뀜';
-
-  PERFORM transfer_family_owner(g, u1, u2);
-  PERFORM * FROM anonymize_user(u1);
-  ASSERT (SELECT name = '탈퇴한 사용자' FROM app_user WHERE id = u1), 'T81 방장을 넘긴 뒤에는 익명화되어야 함';
 
   BEGIN
     PERFORM * FROM anonymize_user(gen_random_uuid());
@@ -94,7 +98,7 @@ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T83 개인 차단(SAFE-02): 자기 자신은 차단 못 함, 같은 쌍 중복 거부, 양방향은 별개 행
+\echo T83 개인 차단(SAFE-02): 자기 자신은 차단 못 함, 같은 쌍 중복 거부, 양방향은 별개 행, 차단하면 자동으로 팀에 신고됨
 BEGIN;
 DO $$
 DECLARE u1 constant uuid := '00000000-0000-0000-0000-000000000001';
@@ -110,9 +114,14 @@ BEGIN
     INSERT INTO user_block (blocker_id, blocked_id) VALUES (u1, u2);
     RAISE EXCEPTION 'T83 failed: 같은 쌍이 중복 저장됨';
   EXCEPTION WHEN unique_violation THEN NULL; END;
+  ASSERT (SELECT count(*) FROM report WHERE target_type = 'user' AND reporter_id = u1 AND target_id = u2) = 1,
+         'T83 차단하면 자동으로 신고가 쌓여야 함(SAFE-02)';
 
   INSERT INTO user_block (blocker_id, blocked_id) VALUES (u2, u1);  -- 맞차단은 별개 행
   ASSERT (SELECT count(*) FROM user_block WHERE blocker_id IN (u1, u2)) = 2, 'T83 양방향 차단은 별개 행';
+  ASSERT (SELECT count(*) FROM operator_alert_log WHERE kind = 'report_received' AND ref_id IN
+            (SELECT id FROM report WHERE target_type = 'user' AND reporter_id IN (u1, u2))) = 2,
+         'T83 자동 신고도 운영 알림(ADM-08)으로 이어져야 함';
 END $$;
 ROLLBACK;
 

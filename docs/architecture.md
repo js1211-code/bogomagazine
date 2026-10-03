@@ -41,8 +41,8 @@
 | 모듈 | 소유 테이블 | 책임 | 마이그레이션 파일 |
 |---|---|---|---|
 | **identity** | `app_user`, `auth_identity`, `device`, `waitlist_signup`, `user_block` | 사용자, 카카오/애플 로그인 연결, 회원 탈퇴 익명화, 푸시 토큰, 정식 출시 대기 신청(WAIT-01), 개인 차단(SAFE-02) | `V001`, `R__070_identity_privacy` |
-| **admin** | `operator`, `operator_alert_log` | Admin 페이지 운영자 계정과 역할(`staff_write`/`staff_read`/`printshop_read`), 조판 실패·신고 접수 운영 알림(ADM-08) | `V001` |
-| **groups** | `family_group`, `family_member`(+`relationship`), `family_invite`, `family_block`, `delivery_address`, `delivery_address_access_log` | 가족 그룹(방장 = `owner_id`), 구성원(나가면 `left_at`, 수신자와의 관계), 카카오톡 초대 링크, 방장이 내보낸 계정 차단(FAM-09/10), 조부모님 배송지+수신자 정보(전화번호·주소 암호화), 운영자의 배송지 열람 기록(ADM-01) | `V001`, `R__005_groups_membership` |
+| **admin** | `operator`, `operator_alert_log` | Admin 페이지 운영자 계정(전원 동일 권한, ADM-01), 조판 실패·신고 접수 운영 알림(ADM-08) | `V001` |
+| **groups** | `family_group`, `family_member`(+`relationship`), `family_invite`, `family_block`, `delivery_address`, `delivery_address_access_log` | 가족 그룹(방장 = `owner_id`, 신문 제호 `newsletter_title` 기본값 '보고잡지' FAM-03), 구성원(나가면 `left_at`, 수신자와의 관계), 카카오톡 초대 링크, 방장이 내보낸 계정 차단(FAM-09/10), 조부모님 배송지+수신자 정보(전화번호·주소 암호화), 운영자의 배송지 열람 기록(ADM-01) | `V001`, `R__005_groups_membership` |
 | **templates** | `template`, `page_master`, `style`, `font` | 불변 버전의 판형/슬롯/스타일/폰트 | `V001` |
 | **issues** | `issue`, `issue_status_history`, `issue_status_transition` | 호의 상태 전이(가족 또는 운영자가 바꿈), 월 마감 배치, 진행상태 조회 | `R__020_issues_lifecycle`, `R__050_issues_batch` |
 | **feed** | `post`, `media`, `media_rendition`, `issue_media`, `text_block`, `question`, `issue_question`, `comment`, `report`, `banned_word`, `notification_log` | 앱 안 피드(글/사진/질문 답변, 호와 독립), 마감 후 게시 가드, 호별 사진 선별(`issue_media`), 질문카드(QST), 답변 댓글, 콘텐츠 신고(SAFE-01), 금칙어(SAFE-03), 알림 발송 이력(NOTI-01~05, `question`을 참조해서 issues가 아니라 여기 소속) | `R__010_feed_selection`, `R__030_feed_guards` |
@@ -84,13 +84,16 @@
 |---|---|---|
 | 로그인 | 카카오/애플만 (`auth_identity.provider` CHECK) | 제약 (T82) |
 | 그룹 만들기 | 로그인한 누구나. 만든 사람이 방장 | `create_family_group()` |
-| 초대 링크 만들기/취소 | **방장만** | 트리거 (T21). 취소는 `revoked_at` 갱신 (앱이 방장 확인) |
-| 초대 수락 | 로그인한 누구나(링크 소지자), 차단된 계정은 거부. 항상 일반 구성원으로 합류 | `accept_family_invite()` (만료/취소/횟수 초과/차단 거부, T22~T24) |
-| 구성원 내보내기 | **방장만**. 내보내면 자동으로 차단 목록에 등록(FAM-09). 나가기는 본인(차단 안 됨) | `remove_family_member(group, actor, target)` (T24) |
+| 초대 링크 만들기 | **방장만**. 유효기간·사용 횟수 제한·취소 없음(FAM-05, V-23) | 트리거 (T21) |
+| 초대 수락 | 로그인한 누구나(링크 소지자), 차단된 계정은 거부. 항상 일반 구성원으로 합류 | `accept_family_invite()` (차단 거부, T22~T24) |
+| 구성원 내보내기 | **방장만**. 내보내면 자동으로 차단 목록에 등록(FAM-09). 그룹만 나가고 계정은 유지하는 "스스로 나가기"는 없다(V-36) — 나가려면 탈퇴 | `remove_family_member(group, actor, target)` (T24) |
 | 차단 해제 | **방장만** | `unblock_family_member()` (T24) |
-| 방장 넘기기 | 현재 방장만 | `transfer_family_owner()` (T25) |
+| 방장 탈퇴 시 넘기기 | 수동 넘기기 없음(FAM-11, V-14). 탈퇴하면 가장 먼저 합류한 활동 중인 구성원에게 자동 이전, 혼자뿐이면 탈퇴 거부 | `anonymize_user()` (T81) |
 | 글/사진/질문 답변 올리기 | 그 그룹의 활동 중인 구성원. 질문 답변은 1인당 1개(삭제 제외) | 트리거 + 유니크 인덱스 (T53, T103, feed.sql T120) |
+| 글 수정/삭제(소프트) | **본인만**, 마감 전까지만(POST-06) | `update_post()`/`delete_post()` (feed.sql T126) |
+| 사진 삭제(소프트) | 그 글의 **작성자만**, 마감 전까지만(NFR-11) | `delete_media()` (feed.sql T127) |
 | 답변 댓글 | 그 그룹의 활동 중인 구성원, 답변에만, 마감 전까지 | 트리거 (feed.sql T121) |
+| 댓글 수정/삭제(소프트) | **본인만**, 마감 전까지만(QST-06) | `update_comment()`/`delete_comment()` (feed.sql T128) |
 | 조부모님 배송지/수신자 정보 등록 | 그 그룹의 활동 중인 구성원 | 트리거 (T26, T26b) |
 | 배송지 열람/다운로드 | **운영자만**(Admin), 기록 남음(ADM-01) | 테이블 `delivery_address_access_log` (admin.sql T203) |
 | 조판 검수(게시물 제외/재조판) | **운영자만** (가족의 미리보기·재조판 요청 없음, V-17) | `override.operator_id`, `change_issue_status(..., p_operator)` (review.sql T54) |
@@ -114,20 +117,21 @@ DB 롤 분리(앱 롤에는 함수 실행만 허용)는 TODO이며, 그 전까�
 | `issues.change_issue_status()` | `printed` 진입 시 `feed.enqueue_published_notifications()` 호출(→ `feed.notification_log`에 씀) | 발송완료 푸시(NOTI-03)를 상태 전이와 한 트랜잭션에서 보장하려고. |
 | `layout.fail_compose_job()` | 3번째 실패 시 `admin.operator_alert_log`에 씀 | 조판 실패 알림(ADM-08)을 실패 기록과 한 트랜잭션에서 남기려고. FK 아님(운영 알림은 특정 레코드를 참조할 필요가 없다). |
 | `feed.alert_on_report()` (report AFTER INSERT 트리거) | `admin.operator_alert_log`에 씀 | 신고 접수 알림(ADM-08)도 같은 이유로 트리거에서 바로 남긴다. |
-| `identity.anonymize_user()` | groups(구성원 `left_at`), review(`page_lock`)의 행을 수정/삭제하고 `family_group`을 읽음 | 탈퇴는 본질적으로 여러 모듈을 가로지르는 작업. 글/사진은 지우지 않는다. |
+| `identity.anonymize_user()` | groups(구성원 `left_at`, 방장이면 `family_group.owner_id` 자동 이전), review(`page_lock`)의 행을 수정/삭제 | 탈퇴는 본질적으로 여러 모듈을 가로지르는 작업. 방장 탈퇴 시 자동 이전(FAM-11)도 한 트랜잭션이어야 한다. 글/사진은 지우지 않는다. |
+| `identity.auto_report_on_block()` (user_block AFTER INSERT 트리거) | `feed.report`에 씀(→ `feed.alert_on_report()` 트리거로 `admin.operator_alert_log`까지 이어짐) | 개인 차단 시 자동 신고(SAFE-02)를 차단 기록과 한 트랜잭션에서 남기려고. |
 
 이 예외가 늘어나면 모듈 경계가 무너지고 있다는 신호다. 새 결합을 추가하는 PR은 이 표를 함께 고친다.
 
 ### 함수 수준까지 보면 "계층"이 아니다 (분석으로 확인)
 
-외래키만 보면 위 그림처럼 순환 없는 계층이다. 그러나 함수/뷰 본문까지 파싱해 보면(`scripts/analysis/fn-deps.py`, 함수 38개·뷰 2개, 2026-10-03 재실행)
+외래키만 보면 위 그림처럼 순환 없는 계층이다. 그러나 함수/뷰 본문까지 파싱해 보면(`scripts/analysis/fn-deps.py`, 함수 43개·뷰 2개, 2026-10-04 재실행)
 **`issues`는 `layout`/`review`/`feed`/`printing`과 양방향 결합**이 있다. 외래키는 그쪽이 `issues`를 가리키고, 함수는 `issues`가 그쪽을 읽는다.
 `identity.anonymize_user()`도 groups/review를 건드린다(`groups → identity`는 외래키 방향이라 서로 읽는 쌍이 된다). 위 표가 그 목록이며, 분석 결과와 일치함을 확인했다.
 
 - 의미: **`issues`는 독립적으로 바꾸거나 떼어낼 수 없다.** `layout_run`/`override`/`print_job`/`placement`/`issue_media`/`post`의 컬럼을 바꾸면
   `change_issue_status()`와 `v_issue_progress`가 영향을 받는다.
 - DB가 지켜 주는 것과 아닌 것: **뷰**(`v_issue_progress`)가 쓰는 컬럼은 PostgreSQL이 추적해서 지우려 하면 막는다.
-  **plpgsql 함수 본문**은 추적하지 않아서, 컬럼 이름을 바꿔도 마이그레이션은 성공하고 **테스트에서만** 실패한다(재현 확인). 그래서 모든 함수가 테스트에서 호출되는 것이 중요하다 (`track_functions=all`로 측정, 2026-10-03: 38개 중 37개가 호출 횟수로 잡혔고, 나머지 `guard_post_period_update`는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명한다. 분기 단위 커버리지는 미측정).
+  **plpgsql 함수 본문**은 추적하지 않아서, 컬럼 이름을 바꿔도 마이그레이션은 성공하고 **테스트에서만** 실패한다(재현 확인). 그래서 모든 함수가 테스트에서 호출되는 것이 중요하다 (`track_functions=all`로 측정, 2026-10-04: 43개 중 42개가 호출 횟수로 잡혔고, 나머지 `guard_post_period_update`는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명한다. 분기 단위 커버리지는 미측정).
 
 ## 프로세스 구성
 

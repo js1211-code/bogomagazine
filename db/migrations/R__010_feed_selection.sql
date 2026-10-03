@@ -48,17 +48,19 @@ BEGIN
     -- 같은 트랜잭션에서 반복 호출해도 충돌하지 않게 정리
     DROP TABLE IF EXISTS t_scored, t_elig, t_dedup, t_capped;
 
-    -- 후보 만들기 (이미 있는 행은 그대로 둔다)
+    -- 후보 만들기 (이미 있는 행은 그대로 둔다). 삭제된 사진은 후보로 넣지 않는다(NFR-11)
     INSERT INTO issue_media (issue_id, media_id, group_id)
     SELECT p_issue, m.id, v_group
       FROM media m JOIN post p ON p.id = m.post_id
      WHERE p.group_id = v_group
+       AND m.deleted_at IS NULL
        AND (p.posted_at AT TIME ZONE v_tz)::date BETWEEN v_start AND v_end
     ON CONFLICT (issue_id, media_id) DO NOTHING;
 
-    -- 이전 선별 결과 초기화 (사용자가 뺀 사진/삭제된 글의 사진은 excluded_manual)
+    -- 이전 선별 결과 초기화 (사용자가 뺀 사진/삭제된 사진·글은 excluded_manual)
     UPDATE issue_media im
-       SET selection_status = CASE WHEN m.excluded OR p.deleted_at IS NOT NULL THEN 'excluded_manual' ELSE 'candidate' END,
+       SET selection_status = CASE WHEN m.excluded OR m.deleted_at IS NOT NULL OR p.deleted_at IS NOT NULL
+                                    THEN 'excluded_manual' ELSE 'candidate' END,
            selection_score = NULL
       FROM media m JOIN post p ON p.id = m.post_id
      WHERE m.id = im.media_id AND im.issue_id = p_issue;

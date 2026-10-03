@@ -1,40 +1,18 @@
 -- admin 모듈 테스트 (운영자 계정, 운영자가 바꾼 호 상태 이력). 전체 실행: ./scripts/db.sh test
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
--- 역할(staff_write/staff_read/printshop_read)별 접근 제한은 여기서 강제하지 않는다 — Admin API(앱 레이어)가 생기면 거기서 한다.
+-- 운영자는 전부 동일 권한이다(ADM-01) — 역할 구분/퇴사 처리는 없음.
 \echo == admin
 
-\echo T200 운영자 역할은 staff_write/staff_read/printshop_read 뿐이다
+\echo T201 운영자 이메일: 대소문자 무시하고 유일
 BEGIN;
 DO $$
-DECLARE r text;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('운영자A', 'opA@x.com', 'staff_write');
-  INSERT INTO operator (name, email, role) VALUES ('운영자B', 'opB@x.com', 'staff_read');
-  INSERT INTO operator (name, email, role) VALUES ('인쇄소C', 'opC@x.com', 'printshop_read');
-  FOREACH r IN ARRAY ARRAY['admin', 'staff', 'owner'] LOOP
-    BEGIN
-      INSERT INTO operator (name, email, role) VALUES ('잘못된 역할', 'bad-' || r || '@x.com', r);
-      RAISE EXCEPTION 'T200 failed: % 역할이 허용됨', r;
-    EXCEPTION WHEN check_violation THEN NULL;
-    END;
-  END LOOP;
-END $$;
-ROLLBACK;
-
-\echo T201 운영자 이메일: 활동 중(비활성화 안 됨)인 계정끼리는 대소문자 무시하고 유일, 비활성화된 계정과는 중복 가능
-BEGIN;
-DO $$
-DECLARE o1 uuid;
-BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('운영자A', 'dup@x.com', 'staff_read') RETURNING id INTO o1;
+  INSERT INTO operator (name, email) VALUES ('운영자A', 'dup@x.com');
   BEGIN
-    INSERT INTO operator (name, email, role) VALUES ('운영자A2', 'DUP@x.com', 'staff_read');
+    INSERT INTO operator (name, email) VALUES ('운영자A2', 'DUP@x.com');
     RAISE EXCEPTION 'T201 failed: 대소문자만 다른 중복 이메일이 등록됨';
   EXCEPTION WHEN unique_violation THEN NULL;
   END;
-
-  UPDATE operator SET disabled_at = now() WHERE id = o1;
-  INSERT INTO operator (name, email, role) VALUES ('운영자A 후임', 'DUP@x.com', 'staff_read');
 END $$;
 ROLLBACK;
 
@@ -45,7 +23,7 @@ DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
          u1 constant uuid := '00000000-0000-0000-0000-000000000001';
          op uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('운영자A', 'opD@x.com', 'staff_write') RETURNING id INTO op;
+  INSERT INTO operator (name, email) VALUES ('운영자A', 'opD@x.com') RETURNING id INTO op;
 
   INSERT INTO issue_status_history (issue_id, to_status, changed_by) VALUES (a, 'closing', u1);
   INSERT INTO issue_status_history (issue_id, to_status, operator_id) VALUES (a, 'printing', op);
@@ -65,7 +43,7 @@ DO $$
 DECLARE e1 constant uuid := '00000000-0000-0000-0000-0000000000e1';
         op uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('운영자E', 'opE@x.com', 'staff_read') RETURNING id INTO op;
+  INSERT INTO operator (name, email) VALUES ('운영자E', 'opE@x.com') RETURNING id INTO op;
   INSERT INTO delivery_address_access_log (delivery_address_id, operator_id, action) VALUES (e1, op, 'view');
   INSERT INTO delivery_address_access_log (delivery_address_id, operator_id, action) VALUES (e1, op, 'download');
   ASSERT (SELECT count(*) FROM delivery_address_access_log WHERE delivery_address_id = e1) = 2, 'T203 기록 저장';
@@ -89,7 +67,7 @@ DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         op uuid; v_post uuid; v_report uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('신고처리자', 'opF@x.com', 'staff_write') RETURNING id INTO op;
+  INSERT INTO operator (name, email) VALUES ('신고처리자', 'opF@x.com') RETURNING id INTO op;
   INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '부적절한 글', now()) RETURNING id INTO v_post;
   INSERT INTO report (reporter_id, target_type, target_id, reason) VALUES (u1, 'post', v_post, '부적절함') RETURNING id INTO v_report;
   ASSERT (SELECT status FROM report WHERE id = v_report) = 'pending', 'T204 초기 상태는 pending';

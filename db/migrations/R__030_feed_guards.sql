@@ -119,3 +119,101 @@ END $$;
 DROP TRIGGER IF EXISTS trg_alert_on_report ON report;
 CREATE TRIGGER trg_alert_on_report AFTER INSERT ON report
     FOR EACH ROW EXECUTE FUNCTION alert_on_report();
+
+-- =========================================================
+-- 글/사진/댓글 수정·삭제(POST-06, QST-04/06): 본인만, 마감 전까지만.
+-- 앱은 테이블을 직접 UPDATE/DELETE 하지 않고 이 함수들을 거쳐야 한다(다른 actor 확인 함수들과 같은 방식).
+-- 삭제는 모두 소프트 삭제(deleted_at)다 - 물리 삭제 아님.
+-- =========================================================
+CREATE OR REPLACE FUNCTION update_post(p_post uuid, p_actor uuid, p_body text) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_author uuid; v_group uuid; v_ts timestamptz; v_deleted timestamptz;
+BEGIN
+    SELECT author_id, group_id, posted_at, deleted_at INTO v_author, v_group, v_ts, v_deleted
+      FROM post WHERE id = p_post FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'post % not found', p_post; END IF;
+    IF v_deleted IS NOT NULL THEN
+        RAISE EXCEPTION 'post % is deleted' , p_post USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_actor <> v_author THEN
+        RAISE EXCEPTION 'only the author can edit this post' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    PERFORM assert_period_open(v_group, v_ts);
+    PERFORM assert_no_banned_word(p_body);
+    UPDATE post SET body = p_body, updated_at = now() WHERE id = p_post;
+END $$;
+
+CREATE OR REPLACE FUNCTION delete_post(p_post uuid, p_actor uuid) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_author uuid; v_group uuid; v_ts timestamptz; v_deleted timestamptz;
+BEGIN
+    SELECT author_id, group_id, posted_at, deleted_at INTO v_author, v_group, v_ts, v_deleted
+      FROM post WHERE id = p_post FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'post % not found', p_post; END IF;
+    IF v_deleted IS NOT NULL THEN RETURN; END IF;  -- 이미 지워짐: 멱등
+    IF p_actor <> v_author THEN
+        RAISE EXCEPTION 'only the author can delete this post' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    PERFORM assert_period_open(v_group, v_ts);
+    UPDATE post SET deleted_at = now() WHERE id = p_post;
+END $$;
+
+-- 사진 삭제(소프트, NFR-11): 그 글의 작성자만, 마감 전까지만
+CREATE OR REPLACE FUNCTION delete_media(p_media uuid, p_actor uuid) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_author uuid; v_group uuid; v_ts timestamptz; v_deleted timestamptz;
+BEGIN
+    SELECT p.author_id, p.group_id, p.posted_at, m.deleted_at
+      INTO v_author, v_group, v_ts, v_deleted
+      FROM media m JOIN post p ON p.id = m.post_id
+     WHERE m.id = p_media FOR UPDATE OF m;
+    IF NOT FOUND THEN RAISE EXCEPTION 'media % not found', p_media; END IF;
+    IF v_deleted IS NOT NULL THEN RETURN; END IF;  -- 이미 지워짐: 멱등
+    IF p_actor <> v_author THEN
+        RAISE EXCEPTION 'only the post author can delete this photo' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    PERFORM assert_period_open(v_group, v_ts);
+    UPDATE media SET deleted_at = now() WHERE id = p_media;
+END $$;
+
+CREATE OR REPLACE FUNCTION update_comment(p_comment uuid, p_actor uuid, p_body text) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_author uuid; v_group uuid; v_ts timestamptz; v_deleted timestamptz;
+BEGIN
+    SELECT c.author_id, p.group_id, p.posted_at, c.deleted_at
+      INTO v_author, v_group, v_ts, v_deleted
+      FROM comment c JOIN post p ON p.id = c.post_id
+     WHERE c.id = p_comment FOR UPDATE OF c;
+    IF NOT FOUND THEN RAISE EXCEPTION 'comment % not found', p_comment; END IF;
+    IF v_deleted IS NOT NULL THEN
+        RAISE EXCEPTION 'comment % is deleted', p_comment USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_actor <> v_author THEN
+        RAISE EXCEPTION 'only the author can edit this comment' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    PERFORM assert_period_open(v_group, v_ts);
+    PERFORM assert_no_banned_word(p_body);
+    UPDATE comment SET body = p_body WHERE id = p_comment;
+END $$;
+
+CREATE OR REPLACE FUNCTION delete_comment(p_comment uuid, p_actor uuid) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_author uuid; v_group uuid; v_ts timestamptz; v_deleted timestamptz;
+BEGIN
+    SELECT c.author_id, p.group_id, p.posted_at, c.deleted_at
+      INTO v_author, v_group, v_ts, v_deleted
+      FROM comment c JOIN post p ON p.id = c.post_id
+     WHERE c.id = p_comment FOR UPDATE OF c;
+    IF NOT FOUND THEN RAISE EXCEPTION 'comment % not found', p_comment; END IF;
+    IF v_deleted IS NOT NULL THEN RETURN; END IF;  -- 이미 지워짐: 멱등
+    IF p_actor <> v_author THEN
+        RAISE EXCEPTION 'only the author can delete this comment' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    PERFORM assert_period_open(v_group, v_ts);
+    UPDATE comment SET deleted_at = now() WHERE id = p_comment;
+END $$;

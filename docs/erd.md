@@ -368,6 +368,7 @@ erDiagram
     "family_group" {
         uuid id PK, FK
         text name
+        text newsletter_title
         uuid owner_id FK
         int close_day
         text timezone
@@ -379,10 +380,6 @@ erDiagram
         uuid group_id FK
         uuid created_by FK
         text token_hash UK
-        timestamptz expires_at
-        int max_uses
-        int use_count
-        timestamptz revoked_at
         timestamptz created_at
     }
     "family_member" {
@@ -568,7 +565,6 @@ erDiagram
         uuid id PK
         uuid post_id FK
         uuid group_id FK
-        text kind
         text storage_key
         text sha256
         int width
@@ -584,6 +580,7 @@ erDiagram
         bool pinned
         bool excluded
         timestamptz created_at
+        timestamptz deleted_at
     }
     "media_rendition" {
         uuid media_id PK, FK
@@ -902,9 +899,7 @@ erDiagram
         uuid id PK
         text name
         text email
-        text role
         timestamptz created_at
-        timestamptz disabled_at
     }
     "operator_alert_log" {
         bigint id PK
@@ -947,8 +942,8 @@ erDiagram
 | groups | `delivery_address` | 15 | 조부모님 배송지 + 수신자(성별·사진·1인/부부) 정보. 주문에는 복사본을 남긴다 |
 | groups | `delivery_address_access_log` | 5 | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01) |
 | groups | `family_block` | 4 | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가 |
-| groups | `family_group` | 7 | 가족 그룹. 방장(owner_id)과 마감 정책(마감일, 타임존, 미달 시 자동 미발행) |
-| groups | `family_invite` | 9 | 카카오톡 초대 링크(토큰 해시, 만료, 사용 횟수, 취소). 방장만 만든다 |
+| groups | `family_group` | 8 | 가족 그룹. 방장(owner_id), 신문 제호(newsletter_title, FAM-03)와 마감 정책(마감일, 타임존, 미달 시 자동 미발행) |
+| groups | `family_invite` | 5 | 카카오톡 초대 링크(토큰 해시). 영구 링크, 방장만 만든다(FAM-05) |
 | groups | `family_member` | 6 | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다 |
 | issues | `issue` | 18 | 월간 호. 그 달의 게시물을 모아 만든 결과물. 상태는 change_issue_status()로만 바꾼다 |
 | issues | `issue_status_history` | 8 | 호 상태 변경 이력. changed_by(가족) 또는 operator_id(운영자) 중 하나만 채워짐, 둘 다 NULL이면 배치가 자동 변경 |
@@ -973,5 +968,5 @@ erDiagram
 | printing | `newsletter_view_log` | 4 | 신문 PDF 열람 기록(M-12, PUB-02) |
 | printing | `print_job` | 13 | PDF 생성/프리플라이트 작업 |
 | printing | `print_order` | 16 | 인쇄 주문 1건 = 배송지 1곳. 받는 사람/주소는 주문 시점의 복사본 |
-| admin | `operator` | 6 | 운영자 계정(Admin 페이지). 가족(app_user)과 분리된 역할(staff_write/staff_read/printshop_read) 기반 로그인 |
+| admin | `operator` | 4 | 운영자 계정(Admin 페이지). 가족(app_user)과 분리된 로그인, 역할 구분 없이 동일 권한(ADM-01) |
 | admin | `operator_alert_log` | 5 | 조판 실패(3회)·신고 접수 시 팀 메일 발송 대상(ADM-08) |

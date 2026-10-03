@@ -2,8 +2,8 @@
 # shellcheck disable=SC2015  # ok/fail 도우미는 항상 성공하므로 `A && ok || fail` 패턴이 안전하다
 # 두 세션이 동시에 움직일 때의 보장을 재현한다. (단일 세션 테스트로는 증명할 수 없는 부분)
 #   [A] 마감 처리 중(커밋 전)에 글을 올리면: 글 등록은 마감이 끝날 때까지 기다린 뒤 거부되고, 글이 저장되지 않는다
-#   [C] 사용 1회짜리 초대 링크를 두 사람이 동시에 수락하면: 한 명만 합류하고 다른 한 명은 기다렸다가 거부된다
 #   [B] 워커 둘이 동시에 작업을 가져가면: 호가 1개면 한쪽은 막히지 않고 '없음', 2개면 서로 다른 호를 받는다
+# 초대 링크는 유효기간·사용 횟수 제한이 없는 영구 링크라(FAM-05, V-23) 동시 수락에 경쟁 조건이 없다 -> [C] 삭제함
 # 시간 기준은 넉넉하게 잡았다 (세션 하나가 잠금을 3초 쥐고 있고, 다른 세션은 1.5초 뒤에 시작).
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
@@ -73,27 +73,6 @@ if [ -n "$a" ] && [ -n "$b" ] && [ "${a#A:}" != "${b#B:}" ]; then ok "서로 다
 [ "$elapsed" -lt 1500 ] && ok "B 는 막히지 않음 (${elapsed}ms)" || fail "B 가 A 를 기다림 (${elapsed}ms)"
 r=$("${PSQL[@]}" -c "SELECT count(*) FROM layout_run WHERE status='running'")
 [ "$r" = "2" ] && ok "running 실행이 정확히 2개 (호마다 1개)" || fail "running 실행 수=$r"
-
-echo "[C] 사용 1회짜리 초대 링크를 두 사람이 동시에"
-fresh
-U1=00000000-0000-0000-0000-000000000001
-U3=00000000-0000-0000-0000-000000000003
-U4=00000000-0000-0000-0000-000000000004
-HASH=$(printf 'a%.0s' $(seq 1 64))
-"${PSQL[@]}" -c "INSERT INTO app_user (id, name) VALUES ('$U3','셋째'), ('$U4','넷째');
-                 INSERT INTO family_invite (group_id, created_by, token_hash, expires_at, max_uses) VALUES ('$GROUP','$U1','$HASH', now() + interval '1 day', 1)" >/dev/null 2>&1
-"${PSQL[@]}" -c "BEGIN; SELECT accept_family_invite('$HASH','$U3'); SELECT pg_sleep(3); COMMIT;" >/dev/null 2>&1 &
-apid=$!
-sleep 1.5
-s=$(ms)
-out=$("${PSQL[@]}" -c "SELECT accept_family_invite('$HASH','$U4')" 2>&1)
-e=$(ms)
-wait "$apid"
-elapsed=$((e - s))
-grep -q "exhausted" <<<"$out" && ok "두 번째 사람은 거부됨 (사용 횟수 초과)" || fail "두 번째 사람이 합류함: $out"
-[ "$elapsed" -ge 1000 ] && ok "첫 번째 수락이 끝날 때까지 기다렸다 (${elapsed}ms)" || fail "기다리지 않음 (${elapsed}ms) -> 초대 행 잠금이 안 됨"
-m=$("${PSQL[@]}" -c "SELECT count(*) FROM family_member WHERE group_id='$GROUP' AND user_id IN ('$U3','$U4')")
-[ "$m" = "1" ] && ok "새 구성원은 정확히 1명" || fail "새 구성원 수=$m"
 
 echo "----"
 [ "$bad" -eq 0 ] && echo "동시성 보장 확인됨" || echo "기대와 다른 결과가 있다"

@@ -63,24 +63,24 @@ DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
 BEGIN
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at)
-  VALUES (g, u1, repeat('a', 64), now() + interval '7 days');
+  INSERT INTO family_invite (group_id, created_by, token_hash)
+  VALUES (g, u1, repeat('a', 64));
   BEGIN
-    INSERT INTO family_invite (group_id, created_by, token_hash, expires_at)
-    VALUES (g, u2, repeat('b', 64), now() + interval '7 days');
+    INSERT INTO family_invite (group_id, created_by, token_hash)
+    VALUES (g, u2, repeat('b', 64));
     RAISE EXCEPTION 'T21 failed: 일반 구성원이 초대를 만듦';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
   BEGIN
-    INSERT INTO family_invite (group_id, created_by, token_hash, expires_at)
-    VALUES (g, u1, 'short', now() + interval '7 days');
+    INSERT INTO family_invite (group_id, created_by, token_hash)
+    VALUES (g, u1, 'short');
     RAISE EXCEPTION 'T21 failed: 짧은 해시 허용';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
 END $$;
 ROLLBACK;
 
-\echo T22 초대 수락: 합류, 멱등(사용 횟수 안 쓰임), 일반 구성원으로 합류
+\echo T22 초대 수락: 합류, 두 번 눌러도 안전(멱등), 일반 구성원으로 합류, 유효기간·횟수 제한 없음(FAM-05, V-23)
 BEGIN;
 DO $$
 DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
@@ -89,58 +89,41 @@ DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         r uuid;
 BEGIN
   INSERT INTO app_user (id, name) VALUES (u3, '셋째');
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at, max_uses)
-  VALUES (g, u1, repeat('a', 64), now() + interval '7 days', 5);
+  INSERT INTO family_invite (group_id, created_by, token_hash)
+  VALUES (g, u1, repeat('a', 64));
 
   r := accept_family_invite(repeat('a', 64), u3);
   ASSERT r = g, 'T22 그룹 id 반환';
   ASSERT is_active_member(g, u3), 'T22 합류 안 됨';
   ASSERT (SELECT owner_id <> u3 FROM family_group WHERE id = g), 'T22 합류자가 방장이 됨';
-  ASSERT (SELECT use_count FROM family_invite WHERE token_hash = repeat('a', 64)) = 1, 'T22 사용 횟수';
 
   r := accept_family_invite(repeat('a', 64), u3);
-  ASSERT (SELECT use_count FROM family_invite WHERE token_hash = repeat('a', 64)) = 1, 'T22 두 번 눌러도 횟수는 그대로';
+  ASSERT is_active_member(g, u3), 'T22 두 번 눌러도 안전';
 END $$;
 ROLLBACK;
 
-\echo T23 초대 수락 거부: 없는 링크, 만료, 취소, 횟수 소진, 탈퇴한 사용자
+\echo T23 초대 수락 거부: 없는 링크, 탈퇴한 사용자 (만료·취소·횟수 제한은 스펙에 없어 삭제함)
 BEGIN;
 DO $$
 DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         u3 constant uuid := '00000000-0000-0000-0000-000000000003';
-        u4 constant uuid := '00000000-0000-0000-0000-000000000004';
         u5 constant uuid := '00000000-0000-0000-0000-000000000005';
 BEGIN
-  INSERT INTO app_user (id, name) VALUES (u3, '셋째'), (u4, '넷째');
+  INSERT INTO app_user (id, name) VALUES (u3, '셋째');
   INSERT INTO app_user (id, name, deleted_at) VALUES (u5, '탈퇴', now());
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at, max_uses)
-  VALUES (g, u1, repeat('a', 64), now() + interval '7 days', 1);
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at, revoked_at)
-  VALUES (g, u1, repeat('b', 64), now() + interval '7 days', now());
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at)
-  VALUES (g, u1, repeat('c', 64), now() + interval '1 day');
+  INSERT INTO family_invite (group_id, created_by, token_hash)
+  VALUES (g, u1, repeat('a', 64));
 
   BEGIN PERFORM accept_family_invite(repeat('z', 64), u3); RAISE EXCEPTION 'T23 failed: 없는 링크';
   EXCEPTION WHEN raise_exception THEN ASSERT SQLERRM LIKE '%not found%', 'T23 메시지: ' || SQLERRM; END;
 
-  BEGIN PERFORM accept_family_invite(repeat('b', 64), u3); RAISE EXCEPTION 'T23 failed: 취소된 링크';
-  EXCEPTION WHEN raise_exception THEN ASSERT SQLERRM LIKE '%revoked%', 'T23 메시지: ' || SQLERRM; END;
-
-  BEGIN PERFORM accept_family_invite(repeat('c', 64), u3, now() + interval '2 days'); RAISE EXCEPTION 'T23 failed: 만료된 링크';
-  EXCEPTION WHEN raise_exception THEN ASSERT SQLERRM LIKE '%expired%', 'T23 메시지: ' || SQLERRM; END;
-
   BEGIN PERFORM accept_family_invite(repeat('a', 64), u5); RAISE EXCEPTION 'T23 failed: 탈퇴한 사용자';
   EXCEPTION WHEN raise_exception THEN ASSERT SQLERRM LIKE '%not found or deleted%', 'T23 메시지: ' || SQLERRM; END;
-
-  PERFORM accept_family_invite(repeat('a', 64), u3);       -- 1회 소진
-  BEGIN PERFORM accept_family_invite(repeat('a', 64), u4); RAISE EXCEPTION 'T23 failed: 횟수 초과';
-  EXCEPTION WHEN raise_exception THEN ASSERT SQLERRM LIKE '%exhausted%', 'T23 메시지: ' || SQLERRM; END;
-  ASSERT NOT is_active_member(g, u4), 'T23 거부됐는데 합류됨';
 END $$;
 ROLLBACK;
 
-\echo T24 나가기/내보내기: 본인은 누구나, 타인은 방장만, 방장은 불가, 행은 남고 left_at 만 채워짐, 재합류 가능
+\echo T24 내보내기: 방장만 할 수 있다, 방장은 못 내보냄, 행은 남고 left_at 만 채워짐, 차단 해제 후 재합류 가능 (그룹만 나가고 계정 유지는 없음, V-36)
 BEGIN;
 DO $$
 DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
@@ -154,7 +137,7 @@ BEGIN
   BEGIN PERFORM remove_family_member(g, u2, u3); RAISE EXCEPTION 'T24 failed: 일반 구성원이 남을 내보냄';
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 
-  BEGIN PERFORM remove_family_member(g, u1, u1); RAISE EXCEPTION 'T24 failed: 방장이 나감';
+  BEGIN PERFORM remove_family_member(g, u1, u1); RAISE EXCEPTION 'T24 failed: 방장을 내보냄';
   EXCEPTION WHEN check_violation THEN NULL; END;
 
   BEGIN PERFORM remove_family_member(g, gen_random_uuid(), u3); RAISE EXCEPTION 'T24 failed: 외부인이 내보냄';
@@ -174,61 +157,20 @@ BEGIN
   BEGIN PERFORM remove_family_member(g, u1, u3); RAISE EXCEPTION 'T24 failed: 이미 나간 사람';
   EXCEPTION WHEN raise_exception THEN ASSERT SQLERRM LIKE '%already left%', 'T24 메시지: ' || SQLERRM; END;
 
-  PERFORM remove_family_member(g, u2, u2);                 -- 본인이 나감
-  ASSERT NOT is_active_member(g, u2), 'T24 스스로 나가기';
-  ASSERT (SELECT count(*) FROM family_block WHERE group_id = g AND user_id = u2) = 0, 'T24 스스로 나가면 차단되지 않아야 함';
-
-  -- 옛 링크로 재합류: 스스로 나간 u2 는 가능, 내보내져서 차단된 u3 는 거부
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at)
-  VALUES (g, u1, repeat('a', 64), now() + interval '7 days');
-  PERFORM accept_family_invite(repeat('a', 64), u2);
-  ASSERT is_active_member(g, u2) AND (SELECT left_at IS NULL FROM family_member WHERE group_id = g AND user_id = u2), 'T24 스스로 나간 사람은 재합류 가능';
-
+  -- 차단된 사람은 옛 링크로 재합류 불가, 방장이 차단 해제하면 가능(FAM-10)
+  INSERT INTO family_invite (group_id, created_by, token_hash)
+  VALUES (g, u1, repeat('a', 64));
   BEGIN
     PERFORM accept_family_invite(repeat('a', 64), u3);
     RAISE EXCEPTION 'T24 failed: 차단된 사람이 재합류함';
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 
-  -- 방장이 차단 해제하면 다시 합류 가능 (FAM-10)
   BEGIN PERFORM unblock_family_member(g, u2, u3); RAISE EXCEPTION 'T24 failed: 방장이 아닌 사람이 차단 해제함';
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   PERFORM unblock_family_member(g, u1, u3);
   ASSERT (SELECT count(*) FROM family_block WHERE group_id = g AND user_id = u3) = 0, 'T24 차단 해제';
   PERFORM accept_family_invite(repeat('a', 64), u3);
   ASSERT is_active_member(g, u3), 'T24 차단 해제 후 재합류';
-END $$;
-ROLLBACK;
-
-\echo T25 방장 넘기기: 방장만, 활동 중인 구성원에게만, 넘긴 뒤에는 옛 방장이 나갈 수 있고 초대는 새 방장만
-BEGIN;
-DO $$
-DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
-        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
-        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
-        u3 constant uuid := '00000000-0000-0000-0000-000000000003';
-BEGIN
-  INSERT INTO app_user (id, name) VALUES (u3, '셋째');
-
-  BEGIN PERFORM transfer_family_owner(g, u2, u2); RAISE EXCEPTION 'T25 failed: 방장이 아닌데 넘김';
-  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-
-  BEGIN PERFORM transfer_family_owner(g, u1, u3); RAISE EXCEPTION 'T25 failed: 구성원이 아닌 사람에게 넘김';
-  EXCEPTION WHEN check_violation THEN NULL; END;
-
-  PERFORM transfer_family_owner(g, u1, u2);
-  ASSERT (SELECT owner_id = u2 FROM family_group WHERE id = g), 'T25 방장이 안 바뀜';
-
-  BEGIN
-    INSERT INTO family_invite (group_id, created_by, token_hash, expires_at)
-    VALUES (g, u1, repeat('a', 64), now() + interval '7 days');
-    RAISE EXCEPTION 'T25 failed: 옛 방장이 초대를 만듦';
-  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-
-  PERFORM remove_family_member(g, u1, u1);                 -- 이제 나갈 수 있음
-  ASSERT NOT is_active_member(g, u1), 'T25 옛 방장이 나가지 못함';
-
-  BEGIN PERFORM transfer_family_owner(g, u2, u1); RAISE EXCEPTION 'T25 failed: 나간 사람에게 넘김';
-  EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 ROLLBACK;
 
@@ -291,7 +233,7 @@ DECLARE u3 constant uuid := '00000000-0000-0000-0000-000000000003'; g uuid;
 BEGIN
   INSERT INTO app_user (id, name) VALUES (u3, '셋째');
   g := create_family_group('임시', u3);
-  INSERT INTO family_invite (group_id, created_by, token_hash, expires_at) VALUES (g, u3, repeat('a', 64), now() + interval '1 day');
+  INSERT INTO family_invite (group_id, created_by, token_hash) VALUES (g, u3, repeat('a', 64));
   INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
   VALUES (g, '댁', '이름', 'female', '00004', pgp_sym_encrypt('주소', 'dev-only-change-me'), u3);
   DELETE FROM family_group WHERE id = g;

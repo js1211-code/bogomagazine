@@ -87,21 +87,16 @@ CREATE TABLE user_block (
 -- =========================================================
 -- 0-1. 운영자 계정 (Admin) — 가족(app_user)과는 별도의 운영 주체.
 --      개발자의 DB 직접 접근은 여기 없다(권한 분리는 TODO.md "DB 권한 분리" 참고).
---      Admin 페이지에 로그인하는 사내/사외 운영자만 역할로 구분한다.
+--      지금은 운영자 4명이 동일한 권한으로 Admin 페이지를 같이 쓴다(ADM-01, 역할 구분/퇴사 처리 없음).
 --      바닥 모듈(admin): 다른 모듈을 참조하지 않고, groups/issues 가 이 모듈을 참조한다.
 -- =========================================================
 CREATE TABLE operator (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name        text NOT NULL,
     email       text NOT NULL,
-    role        text NOT NULL CHECK (role IN ('staff_write', 'staff_read', 'printshop_read')),
-    -- staff_write: 상태 전환/재조판/다운로드 등 운영 전반 (사내)
-    -- staff_read: 조회만 (사내)
-    -- printshop_read: 인쇄 관련 조회만 (사외, 인쇄소 담당자)
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    disabled_at timestamptz
+    created_at  timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX ux_operator_email ON operator (lower(email)) WHERE disabled_at IS NULL;
+CREATE UNIQUE INDEX ux_operator_email ON operator (lower(email));
 
 -- 운영 알림(ADM-08): 조판 실패(3회) · 신고 접수 시 팀 메일 발송 대상. 특정 운영자가 아니라 팀 전체로 가므로 operator_id 가 없다
 CREATE TABLE operator_alert_log (
@@ -161,6 +156,7 @@ CREATE TABLE style (
 CREATE TABLE family_group (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name        text NOT NULL,
+    newsletter_title text NOT NULL DEFAULT '보고잡지',   -- 신문 제호(FAM-03). name(그룹 이름)과는 다른 값. 변경 권한은 미결(O-14)
     owner_id    uuid NOT NULL REFERENCES app_user(id),   -- 방장
     close_day   int  NOT NULL DEFAULT 1 CHECK (close_day BETWEEN 1 AND 28),  -- 다음 달 며칠 00:00 에 마감
     timezone    text NOT NULL DEFAULT 'Asia/Seoul',
@@ -192,18 +188,13 @@ ALTER TABLE family_group
 
 -- 카카오톡으로 보내는 초대 링크. 링크의 토큰 원문은 저장하지 않고 해시만 저장한다.
 -- 애플은 이메일을 숨길 수 있으므로 이메일이 아니라 링크 토큰으로 합류시킨다. 합류하는 사람은 항상 일반 구성원이다.
+-- 카톡 공유 링크는 유효기간·사용 횟수 제한·취소가 없다(FAM-05, V-23) — 한 번 만들면 계속 쓰는 영구 링크.
 CREATE TABLE family_invite (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id    uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
     created_by  uuid NOT NULL,              -- 방장 (R__005 트리거가 검사)
     token_hash  text NOT NULL UNIQUE CHECK (length(token_hash) = 64),   -- sha256 hex
-    expires_at  timestamptz NOT NULL,
-    max_uses    int CHECK (max_uses IS NULL OR max_uses > 0),           -- NULL = 횟수 제한 없음 (만료 전까지)
-    use_count   int NOT NULL DEFAULT 0 CHECK (use_count >= 0),
-    revoked_at  timestamptz,                -- 방장이 링크를 취소한 시각
     created_at  timestamptz NOT NULL DEFAULT now(),
-    CHECK (expires_at > created_at),
-    CHECK (max_uses IS NULL OR use_count <= max_uses),
     -- 커밋 시점 검사: 그룹을 지우면 구성원과 초대가 같은 문장에서 함께 지워지기 때문
     FOREIGN KEY (group_id, created_by) REFERENCES family_member (group_id, user_id) DEFERRABLE INITIALLY DEFERRED
 );
@@ -383,7 +374,6 @@ CREATE TABLE media (
     id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     post_id           uuid NOT NULL,
     group_id          uuid NOT NULL,        -- 게시물의 그룹 (복합 외래키로 일치를 보장. issue_media 가 같은 그룹만 묶게 하려고 둠)
-    kind              text NOT NULL DEFAULT 'photo' CHECK (kind IN ('photo','video_thumb')),
     storage_key       text NOT NULL,
     sha256            text NOT NULL,
     width             int  NOT NULL,
@@ -401,6 +391,7 @@ CREATE TABLE media (
     pinned            boolean NOT NULL DEFAULT false,   -- "꼭 넣기"
     excluded          boolean NOT NULL DEFAULT false,   -- "이번 호에서 빼기"
     created_at        timestamptz NOT NULL DEFAULT now(),
+    deleted_at        timestamptz,          -- 소프트 삭제(NFR-11). 글을 지우면 사진도 같이 지워지지만, 사진만 따로 뺄 수도 있다
     UNIQUE (post_id, sha256),
     UNIQUE (id, group_id),                  -- 복합 외래키(issue_media)의 대상
     FOREIGN KEY (post_id, group_id) REFERENCES post (id, group_id) ON DELETE CASCADE
@@ -461,7 +452,7 @@ CREATE TABLE comment (
 CREATE TABLE report (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     reporter_id uuid NOT NULL REFERENCES app_user(id),
-    target_type text NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_type text NOT NULL CHECK (target_type IN ('post', 'comment', 'user')),  -- 'user' = 개인 차단 시 자동 신고(SAFE-02)
     target_id   uuid NOT NULL,
     reason      text NOT NULL,
     status      text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved')),
@@ -692,11 +683,11 @@ COMMENT ON TABLE auth_identity           IS 'module:identity | 로그인 수단(
 COMMENT ON TABLE device                  IS 'module:identity | 푸시 알림용 디바이스 토큰(Expo). 발행완료/마감 임박 등에 쓴다';
 COMMENT ON TABLE waitlist_signup          IS 'module:identity | 정식 출시 대기 신청(WAIT-01). 결제 의향 확인용(M-13)';
 COMMENT ON TABLE user_block               IS 'module:identity | 개인 차단(SAFE-02). 차단한 사람의 콘텐츠를 숨긴다';
-COMMENT ON TABLE operator                IS 'module:admin | 운영자 계정(Admin 페이지). 가족(app_user)과 분리된 역할(staff_write/staff_read/printshop_read) 기반 로그인';
+COMMENT ON TABLE operator                IS 'module:admin | 운영자 계정(Admin 페이지). 가족(app_user)과 분리된 로그인, 역할 구분 없이 동일 권한(ADM-01)';
 COMMENT ON TABLE operator_alert_log      IS 'module:admin | 조판 실패(3회)·신고 접수 시 팀 메일 발송 대상(ADM-08)';
-COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id)과 마감 정책(마감일, 타임존, 미달 시 자동 미발행)';
+COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id), 신문 제호(newsletter_title, FAM-03)와 마감 정책(마감일, 타임존, 미달 시 자동 미발행)';
 COMMENT ON TABLE family_member           IS 'module:groups | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다';
-COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시, 만료, 사용 횟수, 취소). 방장만 만든다';
+COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시). 영구 링크, 방장만 만든다(FAM-05)';
 COMMENT ON TABLE family_block            IS 'module:groups | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가';
 COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지 + 수신자(성별·사진·1인/부부) 정보. 주문에는 복사본을 남긴다';
 COMMENT ON TABLE delivery_address_access_log IS 'module:groups | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01)';

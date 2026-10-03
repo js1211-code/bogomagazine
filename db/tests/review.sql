@@ -11,7 +11,7 @@ DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1';
         v_run uuid; v_p1 uuid; v_op uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('검수자', 'reviewer-t54@x.com', 'staff_write') RETURNING id INTO v_op;
+  INSERT INTO operator (name, email) VALUES ('검수자', 'reviewer-t54@x.com') RETURNING id INTO v_op;
 
   PERFORM change_issue_status(v, 'closing');
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
@@ -55,7 +55,7 @@ DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         v_run uuid; v_p1 uuid; v_op uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('검수자', 'reviewer-t54b@x.com', 'staff_write') RETURNING id INTO v_op;
+  INSERT INTO operator (name, email) VALUES ('검수자', 'reviewer-t54b@x.com') RETURNING id INTO v_op;
   PERFORM change_issue_status(v, 'closing');
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
   VALUES (v, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'done') RETURNING id INTO v_run;
@@ -82,7 +82,7 @@ DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1';
         v_run uuid; v_p1 uuid; v_op uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('검수자', 'reviewer-t62@x.com', 'staff_write') RETURNING id INTO v_op;
+  INSERT INTO operator (name, email) VALUES ('검수자', 'reviewer-t62@x.com') RETURNING id INTO v_op;
   PERFORM change_issue_status(v, 'closing');
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
   VALUES (v, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'done') RETURNING id INTO v_run;

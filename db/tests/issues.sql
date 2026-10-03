@@ -191,7 +191,7 @@ DO $$
 DECLARE v_issue constant uuid := '00000000-0000-0000-0000-0000000000c1'; p record;
         v_run uuid; v_op uuid;
 BEGIN
-  INSERT INTO operator (name, email, role) VALUES ('검수자', 'reviewer@x.com', 'staff_write') RETURNING id INTO v_op;
+  INSERT INTO operator (name, email) VALUES ('검수자', 'reviewer@x.com') RETURNING id INTO v_op;
 
   PERFORM change_issue_status(v_issue, 'closing');
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)

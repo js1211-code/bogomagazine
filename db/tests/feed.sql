@@ -356,6 +356,104 @@ BEGIN
 END $$;
 ROLLBACK;
 
+\echo T126 글 수정·삭제(POST-06): 본인만, 마감 전까지만. 삭제는 소프트(deleted_at)
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_post uuid; v_post2 uuid;
+BEGIN
+  INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '원본', '2026-09-20 12:00+09') RETURNING id INTO v_post;
+  INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '지울 글', '2026-09-20 12:00+09') RETURNING id INTO v_post2;
+
+  BEGIN PERFORM update_post(v_post, u2, '해킹'); RAISE EXCEPTION 'T126 failed: 본인 아닌 사람이 수정함';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN PERFORM delete_post(v_post, u2); RAISE EXCEPTION 'T126 failed: 본인 아닌 사람이 삭제함';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+
+  PERFORM update_post(v_post, u1, '수정됨');
+  ASSERT (SELECT body FROM post WHERE id = v_post) = '수정됨', 'T126 본인 수정 실패';
+
+  PERFORM delete_post(v_post2, u1);
+  ASSERT (SELECT deleted_at IS NOT NULL FROM post WHERE id = v_post2), 'T126 본인 삭제(소프트) 실패';
+  PERFORM delete_post(v_post2, u1);  -- 두 번 지워도 안전(멱등)
+
+  BEGIN PERFORM update_post(v_post2, u1, '지운 글 수정'); RAISE EXCEPTION 'T126 failed: 지운 글이 수정됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  PERFORM change_issue_status(a, 'closing');
+  BEGIN PERFORM update_post(v_post, u1, '마감 후 수정'); RAISE EXCEPTION 'T126 failed: 마감 후 수정됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN PERFORM delete_post(v_post, u1); RAISE EXCEPTION 'T126 failed: 마감 후 삭제됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
+\echo T127 사진 삭제(NFR-11): 그 글의 작성자만, 마감 전까지만, 소프트 삭제
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_post uuid; v_media uuid; v_media2 uuid;
+BEGIN
+  INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '글', '2026-09-20 12:00+09') RETURNING id INTO v_post;
+  INSERT INTO media (post_id, group_id, storage_key, sha256, width, height) VALUES (v_post, g, 'a.jpg', 'sha-a', 10, 10) RETURNING id INTO v_media;
+  INSERT INTO media (post_id, group_id, storage_key, sha256, width, height) VALUES (v_post, g, 'b.jpg', 'sha-b', 10, 10) RETURNING id INTO v_media2;
+
+  BEGIN PERFORM delete_media(v_media, u2); RAISE EXCEPTION 'T127 failed: 본인 아닌 사람이 사진을 지움';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+
+  PERFORM delete_media(v_media, u1);
+  ASSERT (SELECT deleted_at IS NOT NULL FROM media WHERE id = v_media), 'T127 사진 소프트 삭제 실패';
+  PERFORM delete_media(v_media, u1);  -- 멱등
+
+  PERFORM change_issue_status(a, 'closing');
+  BEGIN PERFORM delete_media(v_media2, u1); RAISE EXCEPTION 'T127 failed: 마감 후 사진이 지워짐';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
+\echo T128 댓글 수정·삭제(QST-06): 본인만, 마감 전까지만
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        q uuid; v_answer uuid; v_comment uuid; v_comment2 uuid;
+BEGIN
+  INSERT INTO question (app_body, print_body, corner_name, kind, target)
+  VALUES ('질문', '질문(지면)', '코너', 'short_answer', 'us') RETURNING id INTO q;
+  INSERT INTO issue_question (issue_id, question_id, display_order) VALUES (a, q, 1);
+  INSERT INTO post (group_id, author_id, body, question_id, posted_at)
+  VALUES (g, u1, '답변', q, '2026-09-20 12:00+09') RETURNING id INTO v_answer;
+  INSERT INTO comment (post_id, author_id, body) VALUES (v_answer, u2, '댓글') RETURNING id INTO v_comment;
+  INSERT INTO comment (post_id, author_id, body) VALUES (v_answer, u2, '댓글2') RETURNING id INTO v_comment2;
+
+  BEGIN PERFORM update_comment(v_comment, u1, '해킹'); RAISE EXCEPTION 'T128 failed: 본인 아닌 사람이 댓글 수정';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN PERFORM delete_comment(v_comment, u1); RAISE EXCEPTION 'T128 failed: 본인 아닌 사람이 댓글 삭제';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+
+  PERFORM update_comment(v_comment, u2, '수정된 댓글');
+  ASSERT (SELECT body FROM comment WHERE id = v_comment) = '수정된 댓글', 'T128 본인 댓글 수정 실패';
+
+  PERFORM delete_comment(v_comment2, u2);
+  ASSERT (SELECT deleted_at IS NOT NULL FROM comment WHERE id = v_comment2), 'T128 본인 댓글 삭제(소프트) 실패';
+  PERFORM delete_comment(v_comment2, u2);  -- 멱등
+
+  PERFORM change_issue_status(a, 'closing');
+  BEGIN PERFORM update_comment(v_comment, u2, '마감 후 수정'); RAISE EXCEPTION 'T128 failed: 마감 후 댓글이 수정됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN PERFORM delete_comment(v_comment, u2); RAISE EXCEPTION 'T128 failed: 마감 후 댓글이 삭제됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
 \echo T60 hamming64: bit_count 구현이 문자열 방식과 항상 같음
 DO $$ BEGIN
   ASSERT (SELECT count(*) FROM (

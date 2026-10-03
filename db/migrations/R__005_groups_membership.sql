@@ -76,9 +76,9 @@ CREATE TRIGGER trg_address_creator BEFORE INSERT ON delivery_address
 
 -- 초대 수락: 로그인(카카오/애플)을 마친 사용자가 링크로 들어와 그룹에 합류한다.
 --   p_token_hash 는 링크 토큰의 sha256 hex (토큰 원문은 DB 에 없다). 합류하는 사람은 항상 일반 구성원이다.
---   - 이미 활동 중인 구성원이면 사용 횟수를 쓰지 않고 그룹 id 만 돌려준다 (링크를 두 번 눌러도 안전)
---   - 나갔던 구성원이면 다시 활동 중으로 돌아온다 (방장이 내보낸 사람이 옛 링크로 돌아올 수 있으므로 방장은 링크를 취소해야 한다)
---   - 같은 링크를 동시에 여러 명이 눌러도 사용 횟수 제한이 지켜지도록 초대 행을 잠근다
+--   링크는 유효기간·횟수 제한·취소가 없는 영구 링크다(FAM-05, V-23).
+--   - 이미 활동 중인 구성원이면 그대로 그룹 id 만 돌려준다 (링크를 두 번 눌러도 안전)
+--   - 나갔던 구성원이면 다시 활동 중으로 돌아온다. 방장이 내보낸 사람은 family_block 이 재합류를 막는다(FAM-09/10)
 CREATE OR REPLACE FUNCTION accept_family_invite(p_token_hash text, p_user uuid, p_now timestamptz DEFAULT now())
 RETURNS uuid
 LANGUAGE plpgsql AS $$
@@ -91,8 +91,6 @@ BEGIN
 
     SELECT * INTO v FROM family_invite WHERE token_hash = p_token_hash FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'invite not found'; END IF;
-    IF v.revoked_at IS NOT NULL THEN RAISE EXCEPTION 'invite revoked'; END IF;
-    IF v.expires_at <= p_now THEN RAISE EXCEPTION 'invite expired'; END IF;
 
     IF is_active_member(v.group_id, p_user) THEN
         RETURN v.group_id;
@@ -100,19 +98,15 @@ BEGIN
     IF EXISTS (SELECT 1 FROM family_block WHERE group_id = v.group_id AND user_id = p_user) THEN
         RAISE EXCEPTION 'user % is blocked from group %', p_user, v.group_id USING ERRCODE = 'insufficient_privilege';
     END IF;
-    IF v.max_uses IS NOT NULL AND v.use_count >= v.max_uses THEN
-        RAISE EXCEPTION 'invite exhausted';
-    END IF;
 
     INSERT INTO family_member (group_id, user_id, joined_at) VALUES (v.group_id, p_user, p_now)
     ON CONFLICT (group_id, user_id) DO UPDATE SET left_at = NULL, joined_at = EXCLUDED.joined_at;
-    UPDATE family_invite SET use_count = use_count + 1 WHERE id = v.id;
     RETURN v.group_id;
 END $$;
 
--- 나가기 / 내보내기: 행을 지우지 않고 left_at 을 채운다 (그 사람이 쓴 글의 작성자 정보 유지)
---   - 자기 자신은 누구나 나갈 수 있고, 다른 사람은 방장만 내보낼 수 있다
---   - 방장은 나가거나 내보낼 수 없다 (먼저 방장을 넘겨야 한다)
+-- 내보내기: 방장만 할 수 있다. 행을 지우지 않고 left_at 을 채운다 (그 사람이 쓴 글의 작성자 정보 유지)
+-- 그룹만 나가고 계정은 유지하는 "스스로 나가기"는 없다(V-36) — 나가려면 탈퇴(anonymize_user)를 쓴다.
+-- 방장은 내보낼 수 없다 (탈퇴하면 자동으로 다른 구성원에게 넘어간다, FAM-11)
 CREATE OR REPLACE FUNCTION remove_family_member(p_group uuid, p_actor uuid, p_target uuid)
 RETURNS void
 LANGUAGE plpgsql AS $$
@@ -122,25 +116,20 @@ BEGIN
     SELECT owner_id INTO v_owner FROM family_group WHERE id = p_group FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'family group % not found', p_group; END IF;
 
-    IF NOT is_active_member(p_group, p_actor) THEN
-        RAISE EXCEPTION 'user % is not an active member of group %', p_actor, p_group
-            USING ERRCODE = 'insufficient_privilege';
-    END IF;
-    IF p_actor <> p_target AND p_actor <> v_owner THEN
-        RAISE EXCEPTION 'only the owner can remove other members' USING ERRCODE = 'insufficient_privilege';
+    IF p_actor <> v_owner THEN
+        RAISE EXCEPTION 'only the owner can remove members' USING ERRCODE = 'insufficient_privilege';
     END IF;
     IF p_target = v_owner THEN
-        RAISE EXCEPTION 'the owner cannot leave or be removed: transfer ownership first' USING ERRCODE = 'check_violation';
+        RAISE EXCEPTION 'the owner cannot be removed: withdraw instead' USING ERRCODE = 'check_violation';
     END IF;
 
     UPDATE family_member SET left_at = now()
      WHERE group_id = p_group AND user_id = p_target AND left_at IS NULL;
     IF NOT FOUND THEN RAISE EXCEPTION 'member % not found or already left', p_target; END IF;
 
-    IF p_actor <> p_target THEN  -- 방장이 내보낸 경우 차단 목록에 등록 (FAM-09). 스스로 나간 경우는 차단하지 않음
-        INSERT INTO family_block (group_id, user_id, created_by) VALUES (p_group, p_target, p_actor)
-        ON CONFLICT (group_id, user_id) DO NOTHING;
-    END IF;
+    -- 내보낸 계정은 차단 목록에 등록한다(FAM-09)
+    INSERT INTO family_block (group_id, user_id, created_by) VALUES (p_group, p_target, p_actor)
+    ON CONFLICT (group_id, user_id) DO NOTHING;
 END $$;
 
 -- 차단 해제: 방장만 할 수 있다. 해제하면 같은 초대 링크로 다시 합류 가능 (FAM-10)
@@ -158,20 +147,5 @@ BEGIN
     DELETE FROM family_block WHERE group_id = p_group AND user_id = p_target;
 END $$;
 
--- 방장 넘기기: 현재 방장만 할 수 있고, 새 방장은 활동 중인 구성원이어야 한다
-CREATE OR REPLACE FUNCTION transfer_family_owner(p_group uuid, p_actor uuid, p_new_owner uuid)
-RETURNS void
-LANGUAGE plpgsql AS $$
-DECLARE
-    v_owner uuid;
-BEGIN
-    SELECT owner_id INTO v_owner FROM family_group WHERE id = p_group FOR UPDATE;
-    IF NOT FOUND THEN RAISE EXCEPTION 'family group % not found', p_group; END IF;
-    IF p_actor <> v_owner THEN
-        RAISE EXCEPTION 'only the owner can transfer ownership' USING ERRCODE = 'insufficient_privilege';
-    END IF;
-    IF NOT is_active_member(p_group, p_new_owner) THEN
-        RAISE EXCEPTION 'new owner must be an active member of the group' USING ERRCODE = 'check_violation';
-    END IF;
-    UPDATE family_group SET owner_id = p_new_owner WHERE id = p_group;
-END $$;
+-- 방장 넘기기(수동)는 스펙에 없다(FAM-11, V-14) — 방장이 탈퇴할 때만 자동으로 넘어간다(anonymize_user() 참고).
+DROP FUNCTION IF EXISTS transfer_family_owner(uuid, uuid, uuid);
