@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "ms-azuretools.vscode-docker",
+    "ms-python.python",
+    "redhat.vscode-yaml",
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-pg",
+    "timonwong.shellcheck",
+    "bierner.markdown-mermaid"
+  ]
+}

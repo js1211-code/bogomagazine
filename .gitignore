@@ -1,10 +1,14 @@
-### IntelliJ IDEA ###
-out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-.kotlin
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
 
-### Eclipse ###
+### env ###
+.env
+
+### STS ###
 .apt_generated
 .classpath
 .factorypath
@@ -16,6 +20,15 @@ bin/
 !**/src/main/**/bin/
 !**/src/test/**/bin/
 
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
@@ -24,7 +37,24 @@ bin/
 /.nb-gradle/
 
 ### VS Code ###
-.vscode/
+# 팀 공용 설정(extensions.json, settings.json)은 추적하고, 개인 설정만 무시한다
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 
 ### Mac OS ###
 .DS_Store
+
+### 비밀 값 / 로컬 설정 ###
+.env
+.env.*
+!.env.example
+*.local
+.claude/settings.local.json
+
+### 산출물 ###
+Thumbs.db
+*.log
+tmp/
+node_modules/
+__pycache__/

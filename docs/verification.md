@@ -1,0 +1,128 @@
+# 검증과 재현 방법
+
+"그렇다고 들었다"가 아니라 **직접 돌려서 확인할 수 있는 것**만 모았다. 모든 명령은 저장소 루트에서 실행하고 Docker가 켜져 있어야 한다.
+
+## 한 줄 검증
+
+```bash
+./scripts/db.sh test
+```
+
+빈 DB → Flyway 마이그레이션 → 체크섬 검증 → **ERD가 스키마와 같은지** → 시드 → 모듈별 테스트 + 모듈 경계 테스트. CI도 같은 명령을 쓴다.
+
+## 주장별 확인 방법
+
+| 확인하고 싶은 것 | 명령 | 기대 결과 |
+|---|---|---|
+| 규칙이 코드대로 동작한다 | `./scripts/db.sh test` | `ALL DB TESTS PASSED` |
+| **테스트가 정말 문제를 잡는다** (테스트의 테스트) | `./scripts/verify-guards.sh` | 보호 장치 66개를 하나씩 빼고, 모두 해당 테스트가 실패해야 `모든 변이를 테스트가 잡았다` |
+| **함수/뷰 수준 모듈 의존**(외래키로 안 보이는 결합) | `./scripts/db.sh up && ./scripts/db.sh migrate` 후 `PYTHONUTF8=1 python3 scripts/analysis/fn-deps.py` | 모듈 간 의존 목록. `architecture.md`의 "알려진 예외" 표와 일치해야 하고, 표에 없는 줄이 나오면 문서화하거나 함수를 옮긴다 |
+| 글 올리기/마감, 워커 중복 수령이 **동시에 움직여도** 안전하다 | `./scripts/repro/concurrency.sh` | 글 올리기는 마감이 끝날 때까지 기다렸다 거부되고, 워커 둘은 서로 막히지 않고 다른 호를 받음. (초대 링크는 사용 횟수 제한이 없어져 경쟁 조건 자체가 없음) |
+| `CREATE INDEX CONCURRENTLY`가 Flyway 기본 설정에서 **멈춘다** | `./scripts/repro/flyway-concurrent-index.sh` | 기본값은 30초 안에 끝나지 않고(`timeout`), 우리 설정은 정상 적용 |
+| 조회/배치 성능 수치 | `./scripts/db.sh bench` | 호 1건 조회 약 0.1ms, 그룹 목록 약 0.5ms, 마감 200건 약 2.6초, 사진 3,000장 선별 약 0.65초 (PC마다 다름) |
+| ERD가 스키마와 일치한다 | `./scripts/db.sh erd --check` | `ERD 최신 상태` |
+| ERD 그림이 **실제로 렌더링된다** | 아래 "ERD 렌더링 확인" | `RESULT 10/10 OK` |
+| 비밀이 커밋되지 않는다 | `./scripts/secret-scan.sh --tree` | `no leaks found` |
+| 마이그레이션 규칙(수정 금지/번호/이름) | `./scripts/check-migrations.sh origin/main` (PR 기준) | `마이그레이션 규칙 OK` |
+
+## 지난 설계 점검에서 찾은 문제 → 회귀 테스트
+
+점검 때 재현했던 문제는 모두 고쳤고, 같은 문제가 다시 생기면 아래 테스트가 실패한다.
+
+| 문제 | 테스트 |
+|---|---|
+| S1 재오픈하면 배치가 다시 닫아 버림 | T50 (`db/tests/issues.sql`) |
+| S2 마감 후에도 글/사진이 올라감 | T51 (`db/tests/feed.sql`) |
+| S3 `issue.status` 직접 변경으로 전이 규칙 우회 | T53 (`issues.sql`) |
+| S4 review 상태가 아니거나 무효화(superseded)된 조판에 수정(override)이 생김 | T54, T62 (`db/tests/review.sql`) |
+| S5 조판/인쇄 없이 상태만 진행 | T55, T55b (`issues.sql`) |
+| S6 구성원 0명이면 진행률 NULL | T58 (`issues.sql`) |
+| 워커가 죽으면 호가 영원히 멈춤 | T70~T74 (`db/tests/layout.sql`) |
+| 같은 시각의 행에서 "최신" 판정이 흔들림 | T63 (`layout.sql`) |
+| 모듈 경계 위반 | T90~T92 (`db/tests/architecture.sql`) |
+| 방장이 아닌 사람이 초대/내보내기 | T21, T24 (`db/tests/groups.sql`) |
+| 다른 그룹의 사진/배송지가 섞임 | T100~T102, T107, T109 (`db/tests/integrity.sql`) |
+| 나간 구성원이 글/수정/주문 | T53, T103, T105, T109 |
+
+`verify-guards.sh`는 이 테스트들이 "통과만 하는 가짜"가 아님을 확인한다.
+
+## ERD 렌더링 확인
+
+GitHub에서 그림이 깨지는 것을 막기 위해 실제 Mermaid 엔진으로 확인한다. (Mermaid 라이브러리를 CDN에서 받으므로 인터넷이 필요하다.)
+
+```bash
+python3 -m http.server 8765 --bind 127.0.0.1
+# 브라우저에서 http://127.0.0.1:8765/scripts/erd-render-check.html 열기
+# 맨 위에 "RESULT 10/10 OK" 가 나와야 한다. 실패하면 다이어그램별 오류가 빨갛게 표시된다.
+```
+
+이 검사로 실제 결함을 한 번 잡았다: 테이블 이름 `style`이 Mermaid 예약어라 3개 다이어그램이 깨졌고, 모든 엔티티 이름에 따옴표를 붙여 해결했다.
+
+## 도구 평가 재현 (린트/스캔)
+
+지난 검토에서 판단 근거로 쓴 실행들이다. 숫자는 2026-10-01 기준이며 파일이 바뀌면 달라진다.
+
+```bash
+# shellcheck: 지적 0건이어야 함
+docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable scripts/*.sh scripts/repro/*.sh .githooks/pre-commit
+
+# actionlint: 워크플로 문법 검사, 지적 0건이어야 함
+docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
+
+# squawk: baseline 에는 소음 118건. 위험한 변경(NOT NULL 추가, 인덱스 잠금, 컬럼 삭제 등)은 실제로 잡음
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/sbdchd/squawk:latest db/migrations/V001__baseline.sql
+
+# sqlfluff: R__020 에서 248건(대부분 스타일). 함수 본문 안은 검사하지 않음 -> 도입하지 않기로 함
+python3 -m pip install sqlfluff
+python3 -m sqlfluff lint db/migrations/R__020_issues_lifecycle.sql --dialect postgres
+```
+
+비밀 스캔이 실제로 잡는지 확인하려면 가짜 토큰을 스테이징해 본다 (값은 임의의 가짜).
+
+```bash
+printf 'token = "ghp_%s"\n' "$(head -c 200 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 36)" > zz_fake.txt
+git add zz_fake.txt && bash scripts/secret-scan.sh --staged   # leaks found, 종료 코드 1
+git reset -q && rm zz_fake.txt
+```
+
+## DB 의존성 점검 (2026-10-01 실행)
+
+| 점검 | 방법 | 결과 |
+|---|---|---|
+| 테이블 외래키 순환 | `pg_constraint`에서 재귀 쿼리 | 없음 (자기참조 `style.based_on`, `font.fallback`뿐) |
+| 호 상태 정의 일관성 | CHECK 제약 / 전이표 / `collecting`에서의 도달 가능성 비교 | 모두 일치, 끝점은 `archived`뿐 |
+| 중복·불필요 인덱스 | 완전 중복 + 다른 인덱스의 앞부분인 것. 쿼리 자체도 일부러 만든 중복으로 검증 | 없음 |
+| 반복 마이그레이션 순서 의존 | 9개 파일을 **역순/무작위 순서**로 적용한 뒤 전체 테스트, 이미 적용된 DB에 2번 재적용 (2026-10-02, 재설계 후 다시 실행) | 전부 통과 (순서에 의존하지 않음) |
+| 테스트가 호출하지 않는 함수 | `track_functions=all`로 전체 테스트 실행 후 `pg_stat_user_functions` | 함수 43개 중 42개 호출됨, 나머지 1개(`guard_post_period_update`)는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명 (분기 커버리지는 미측정, 2026-10-04 재측정) |
+| 함수/뷰 수준 모듈 의존 | `scripts/analysis/fn-deps.py` | 문서의 예외 표와 대부분 일치 (기능명세서_최종_1002 반영 후 재실행, 2026-10-04: 함수 43개·뷰 2개). `issues.change_issue_status()→feed.enqueue_published_notifications()`, `layout.fail_compose_job()`/`feed.alert_on_report()→admin.operator_alert_log`는 테이블에 직접 쓰는 것이라 이 도구(함수 호출만 추적)는 못 잡는다 — architecture.md의 "알려진 예외" 표에 수동으로 기록해 둠 |
+| 삭제 동작 | 실제로 지워 보기 | **결함 발견**: 조판 결과가 있는 호는 삭제 실패 → 배치 외래키를 커밋 시점 검사로 수정, T04b/T04c로 고정 |
+| 의존성이 깨지는 방식 | 컬럼 삭제/이름 변경을 직접 시도 | 뷰가 쓰는 컬럼은 DB가 삭제를 막음. **함수 본문이 쓰는 컬럼은 이름을 바꿔도 마이그레이션이 성공**하고 테스트에서만 실패 |
+
+## 정규화·참조 정합성 점검 (2026-10-01 실행)
+
+| 점검 | 방법 | 결과 |
+|---|---|---|
+| 같은 사실이 두 곳에 있는 구조 찾기 | 한 테이블이 부모 A와 B를 동시에 참조하고 B도 A로 이어지는 "마름모" 탐색 (`pg_constraint`) | 호/조판/게시물/계정 사이에 9곳 (사용자 참조는 "누가"를 뜻해 제외) |
+| 실제로 어긋난 값이 들어가는가 | 호 A/B를 만들어 엇갈리게 연결해 보기 17건 | 보강 전: **16건 허용**(막힌 것은 승인의 호 불일치 1건뿐). 보강 후: 14건 거부 + 의도적으로 허용한 3건(`T112`~`T114`) |
+| 정상 데이터까지 막지 않는가 | 같은 시나리오의 일관된 입력 | 모두 허용 (T100~T111의 양성 대조) |
+| 복합 키에서 연쇄 동작이 유지되는가 | 글 삭제 시 텍스트 `SET NULL (post_id)`·사진 `CASCADE`, 조판 삭제 시 `CASCADE`, 배치된 사진의 글은 삭제 거부 | 정상 (T114~T116) |
+| 새 보호 장치가 정말 막는가 | `verify-guards.sh` (기능명세서_최종_1002 반영 후 66항목으로 다시 작성, 2026-10-04) | 이전 버전(58항목, 2026-10-03)은 전부 잡힘을 확인함. 이번에 추가/변경한 항목은 항목마다 DB를 새로 만들어 수 분 걸려서 **끝까지 재실행해 확인하지 못함** — `db.sh test`(개별 테스트 전체 통과)로는 확인했지만, "테스트가 가짜가 아닌지"까지는 다음에 `./scripts/verify-guards.sh`를 끝까지 돌려서 마저 확인해야 함 |
+| 기존 기능이 깨지지 않았나 | 기존 테스트 전체 | 2곳이 실패했고 둘 다 **테스트가 일관되지 않은 데이터**를 쓰던 것(그룹 밖 사용자를 호 참여자로, 참여자가 아닌 사용자가 사진 업로드)이라 코드가 아닌 테스트를 고침 |
+
+## 이 검증의 한계
+
+- **환경**: Windows + Docker Desktop, PostgreSQL 16.15, Flyway 13.8.1에서 확인했다. 다른 버전에서는 같은 동작을 보장하지 않는다 (특히 Flyway 멈춤 재현은 버전에 민감하다).
+- **GitHub Actions**: 워크플로 파일의 문법은 `actionlint`로 확인했지만, 원격에서 한 번도 실행되지 않았다.
+- **성능 수치**: 한 대의 PC, 컨테이너 기본 설정, 합성 데이터 기준이다. 실제 데이터 분포와 운영 DB 사양에서는 다르다. 비교는 같은 PC에서 전/후로 한다.
+- **동시성 재현**은 타이밍 기반이다. 판정 기준을 넉넉하게 잡았지만(잠금 3초 / 시작 1.5초 지연 / 임계값 1.0~1.5초), 매우 느린 환경에서는 오탐할 수 있다. 이 스크립트가 보여 주는 것은 "그 순서로 실행했을 때의 보장"이지, 모든 인터리빙의 증명은 아니다.
+- **함수 수준 의존 분석**은 이름 매칭(정규식) 기반이라 동적 SQL은 못 보고 오탐/누락이 있을 수 있다. 결과를 사람이 읽고 판단해야 하며, 아직 CI 검사가 아니다.
+- **함수 커버리지**는 "호출됐는가"까지만 본다.
+- **방장 권한**은 `p_actor`를 앱이 넘긴 값으로 믿는 함수/트리거 수준이다. 앱이 테이블을 직접 수정하는 경우는 검증하지 못했고(DB 롤 분리 전), **카카오/애플 로그인 자체**(토큰 검증, 계정 연결)는 이 저장소에서 검증하지 않았다. 함수 안의 분기(오류 경로 등)가 실행됐는지는 모른다.
+- **변이 검사**는 66가지뿐이다. 통과해도 "모든 테스트가 충분하다"는 뜻이 아니다.
+- **CI에 들어간 것**은 `db.sh test`(ERD 일치 포함)와 비밀 스캔뿐이다. `verify-guards.sh`, `repro/*`, `bench`, ERD 렌더링 확인은 시간이 오래 걸리거나 인터넷/브라우저가 필요해 수동 실행이다.
+- **Mermaid 버전**: 렌더링 확인은 Mermaid 11을 썼다. GitHub에 내장된 버전과 다를 수 있다. 원격에 올린 뒤 `docs/erd.md`가 GitHub에서 실제로 그려지는지 한 번 눈으로 확인해야 한다.
+- **비밀 스캔(gitleaks)**은 패턴 기반이라 완벽한 보증이 아니다. 로컬 pre-commit은 Docker가 꺼져 있으면 경고만 하고 통과하며(CI가 다시 검사), `--no-verify`로 우회할 수 있다.
+- **Flyway `CREATE INDEX CONCURRENTLY` 함정**: `FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK=false`가 없으면 배포가 무한 정지한다. `docker-compose.dbtest.yml`에는 적용했지만 운영 배포 설정에는 따로 넣어야 한다([ADR-0002](adr/0002-db-migrations.md)).
+- **모듈 간 함수/뷰 수준 결합**은 자동 검사가 없다 ([architecture.md](architecture.md)의 "알려진 예외" — 사람이 수동으로 기록·확인).
+- 사용자/템플릿/스타일/폰트를 참조하는 외래키 13개에는 인덱스가 없다. 사용자를 실제로 삭제하지 않고 익명화하므로 일부러 뺐다.
+- 같은 트랜잭션에서 만든 행의 `created_at`은 같다. "최신" 판정은 `seq`로 하므로 영향이 없지만, 시각 정렬에 의존하는 새 코드를 쓰면 안 된다.
