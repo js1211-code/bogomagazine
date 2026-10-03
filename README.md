@@ -23,12 +23,10 @@
 │  ├─ bench/perf.sql     성능 측정 (./scripts/db.sh bench)
 │  └─ tests/             모듈별 테스트 + architecture.sql(모듈 경계 검증)
 ├─ docs/
-│  ├─ status.md          진행 현황 체크리스트 (한 것 / 앞으로 / 팀 결정 사항)
 │  ├─ erd.md             ERD (스키마에서 자동 생성, 모듈별 관계도 포함)
 │  ├─ architecture.md    모듈 지도, 의존 규칙, 알려진 예외
 │  ├─ workflow.md        작업 흐름, 브랜치/커밋 규칙
 │  ├─ verification.md    검증/재현 방법 (직접 돌려 볼 수 있는 것만)
-│  ├─ api-progress.md    호 진행상태 조회 API + 상태값 + 배치/워커 계약
 │  ├─ algorithm-io.md    자동 조판 알고리즘 입출력 계약
 │  └─ adr/               결정 기록 (모듈러 모놀리스, DB 마이그레이션)
 ├─ scripts/              db.sh(개발/테스트/ERD/성능), check-migrations.sh, secret-scan.sh, check.sh, setup.sh,
@@ -44,8 +42,7 @@
 
 ## 읽는 순서
 
-0. [docs/status.md](docs/status.md): **진행 현황 체크리스트** — 한 것, 해야 할 것, 팀이 결정할 것
 1. [docs/architecture.md](docs/architecture.md): 어떤 모듈이 무엇을 소유하나
-2. [docs/workflow.md](docs/workflow.md): 무엇을 바꿀 때 어떤 파일을 고치나
-3. [docs/api-progress.md](docs/api-progress.md): 호의 생애와 상태값
+2. [docs/erd.md](docs/erd.md): 실제 스키마 구조 — 호의 상태값·관계는 여기(스키마에서 자동 생성)가 기준
+3. [docs/workflow.md](docs/workflow.md): 무엇을 바꿀 때 어떤 파일을 고치나
 4. [TODO.md](TODO.md): 아직 안 한 것

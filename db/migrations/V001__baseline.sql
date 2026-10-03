@@ -2,11 +2,11 @@
 -- main 에 합쳐지고 어떤 DB 에 적용된 뒤에는 수정하지 않는다 (체크섬이 깨짐). 그때부터는 새 V0xx__설명.sql 을 추가한다.
 -- 함수/뷰/트리거는 R__*.sql 에서 관리한다.
 --
--- 서비스: 가족 그룹(방장 + 구성원)이 앱 안 피드에 사진/글을 올리면, 매월 그 달의 글을 모아 신문(월간지)으로 자동 조판하고
---         가족이 검토(미리보기/재조판 요청)한 뒤 자동으로 인쇄해서 조부모님께 우편으로 보낸다. 승인 절차는 없다:
---         조판 완료 후 그룹별 review_window_hours(기본 24시간) 안에만 재조판을 요청할 수 있고, 지나면 자동으로 인쇄 단계로 넘어간다.
---         로그인은 카카오/애플만. 조부모님은 앱 사용자가 아니다.
--- 흐름: 피드 게시 -> (월 마감) 선별 -> 자동 조판 -> 가족 검토(미리보기/재조판 요청, 시간 제한) -> 자동 인쇄 전환 -> 인쇄 -> 배송
+-- 서비스: 가족 그룹(방장 + 구성원)이 앱 안 피드에 사진/글을 올리면, 매월(필드 테스트는 2주) 그 기간의 글을 모아
+--         신문으로 자동 조판한다. 가족에게는 발행 전 미리보기가 없다(V-17) — 운영자(Admin)가 조판 결과를 검수하고
+--         필요하면 게시물을 이번 호에서 제외한 뒤 다시 조판시키며, 검수가 끝나면 운영자가 "발송 완료"로 수동 전환한다.
+--         로그인은 카카오/애플만. 조부모님(수신자)은 앱 사용자가 아니다.
+-- 흐름: 피드 게시 -> (마감) 선별 -> 자동 조판 -> 운영자 조판 검수(제외/재조판은 운영자가) -> 운영자가 발송 완료로 전환 -> 인쇄 -> 배송
 --
 -- 무결성 원칙: 같은 사실이 두 곳에 있으면(예: 사진의 그룹 = 게시물의 그룹) 복합 외래키로 서로 어긋나지 못하게 한다.
 --   복합 외래키는 컬럼 중 하나가 NULL 이면 검사를 건너뛴다 (호 전체 승인, 게시물이 지워진 텍스트 등이 이에 해당).
@@ -21,6 +21,16 @@ CREATE TABLE app_user (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     email       text,                  -- 카카오: 동의 안 하면 NULL / 애플: 릴레이 주소일 수 있음
     name        text,                  -- 애플은 최초 로그인 때만 제공 -> 없을 수 있음
+    -- 프로필(PRF-01). 사진은 카카오 프로필이 기본값, 수정 가능. 생일은 월·일만, 선택 입력(사용처 미정)
+    photo_key   text,
+    birth_month int CHECK (birth_month BETWEEN 1 AND 12),
+    birth_day   int CHECK (birth_day BETWEEN 1 AND 31),
+    -- 가입 동의(ACC-03). 개인정보/약관은 가입 시 필수, 연구활용은 선택이라 NULL 허용.
+    -- 가입 폼이 모두 한 번에 제출되므로 기본값(now())으로 둬도 안전 - "동의 안 하면 가입을 안 보낸다"가 전제
+    privacy_consented_at     timestamptz NOT NULL DEFAULT now(),
+    terms_consented_at       timestamptz NOT NULL DEFAULT now(),
+    age_over_14_confirmed_at timestamptz NOT NULL DEFAULT now(),  -- 만 14세 미만이면 앱이 가입 자체를 막는다
+    research_consented_at    timestamptz,                         -- 연구·발표 활용 동의(선택)
     created_at  timestamptz NOT NULL DEFAULT now(),
     deleted_at  timestamptz
 );
@@ -42,6 +52,65 @@ CREATE TABLE auth_identity (
     UNIQUE (provider, provider_uid)
 );
 CREATE INDEX ix_auth_identity_user ON auth_identity (user_id);
+
+-- 푸시 알림용 디바이스 토큰(Expo). 발행완료, 마감 임박 등에 쓴다. 한 사용자가 여러 기기를 가질 수 있다
+CREATE TABLE device (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    platform      text NOT NULL CHECK (platform IN ('ios', 'android')),
+    push_token    text NOT NULL,
+    last_seen_at  timestamptz,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    revoked_at    timestamptz
+);
+CREATE UNIQUE INDEX ux_device_push_token ON device (push_token) WHERE revoked_at IS NULL;
+CREATE INDEX ix_device_user ON device (user_id) WHERE revoked_at IS NULL;
+
+-- 정식 출시 대기 신청(WAIT-01). 결제 의향 확인용(M-13). 결제·외부 링크 없음
+CREATE TABLE waitlist_signup (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    uuid NOT NULL REFERENCES app_user(id),
+    code       text NOT NULL DEFAULT 'WAIT-01',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, code)
+);
+
+-- 개인 차단(SAFE-02). 차단하면 내 화면에서 그 사람 콘텐츠를 숨긴다(앱). 팀 신고(report)는 앱이 같이 만든다
+CREATE TABLE user_block (
+    blocker_id uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    blocked_id uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (blocker_id, blocked_id),
+    CHECK (blocker_id <> blocked_id)
+);
+
+-- =========================================================
+-- 0-1. 운영자 계정 (Admin) — 가족(app_user)과는 별도의 운영 주체.
+--      개발자의 DB 직접 접근은 여기 없다(권한 분리는 TODO.md "DB 권한 분리" 참고).
+--      Admin 페이지에 로그인하는 사내/사외 운영자만 역할로 구분한다.
+--      바닥 모듈(admin): 다른 모듈을 참조하지 않고, groups/issues 가 이 모듈을 참조한다.
+-- =========================================================
+CREATE TABLE operator (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        text NOT NULL,
+    email       text NOT NULL,
+    role        text NOT NULL CHECK (role IN ('staff_write', 'staff_read', 'printshop_read')),
+    -- staff_write: 상태 전환/재조판/다운로드 등 운영 전반 (사내)
+    -- staff_read: 조회만 (사내)
+    -- printshop_read: 인쇄 관련 조회만 (사외, 인쇄소 담당자)
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    disabled_at timestamptz
+);
+CREATE UNIQUE INDEX ux_operator_email ON operator (lower(email)) WHERE disabled_at IS NULL;
+
+-- 운영 알림(ADM-08): 조판 실패(3회) · 신고 접수 시 팀 메일 발송 대상. 특정 운영자가 아니라 팀 전체로 가므로 operator_id 가 없다
+CREATE TABLE operator_alert_log (
+    id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    kind     text NOT NULL CHECK (kind IN ('layout_failed', 'report_received')),
+    ref_type text NOT NULL CHECK (ref_type IN ('issue', 'report')),
+    ref_id   uuid NOT NULL,
+    sent_at  timestamptz NOT NULL DEFAULT now()
+);
 
 -- =========================================================
 -- 1. 템플릿 (불변 버전)
@@ -98,18 +167,19 @@ CREATE TABLE family_group (
     -- true: 선별 가능한 사진이 min_photos 미만이면 자동 미발행(skipped)
     -- false: 부족해도 마감하고 조판이 큰 사진/여백으로 채움
     auto_skip_below_min boolean NOT NULL DEFAULT true,
-    -- 조판 완료(review 진입) 후 미리보기 + 재조판 요청이 가능한 시간. 지나면 자동으로 printing 전환 (advance_reviewed_issues)
-    review_window_hours int NOT NULL DEFAULT 24 CHECK (review_window_hours > 0),
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
 -- 구성원. 나가거나 내보내도 행은 지우지 않고 left_at 을 채운다 (그 사람이 쓴 글/기록의 작성자 정보를 유지하려고).
 CREATE TABLE family_member (
-    group_id   uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
-    user_id    uuid NOT NULL REFERENCES app_user(id),
-    nickname   text,                    -- 가족 안에서의 호칭 (엄마, 아빠 ...)
-    joined_at  timestamptz NOT NULL DEFAULT now(),
-    left_at    timestamptz,             -- NULL = 활동 중
+    group_id     uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
+    user_id      uuid NOT NULL REFERENCES app_user(id),
+    nickname     text,                    -- 가족 안에서의 호칭 (엄마, 아빠 ...)
+    -- 수신자(조부모)와의 관계 (PRF-02). 가족 소속 단위로 저장 - 같은 사용자도 가족마다 다를 수 있다.
+    -- 호칭 대응표(TTL-01~04) 8개 값. 합류 후 선택/수정하므로 처음엔 NULL 일 수 있다
+    relationship text CHECK (relationship IN ('손녀', '손자', '딸', '아들', '며느리', '사위', '손주며느리', '손주사위')),
+    joined_at    timestamptz NOT NULL DEFAULT now(),
+    left_at      timestamptz,             -- NULL = 활동 중
     PRIMARY KEY (group_id, user_id),
     CHECK (left_at IS NULL OR left_at >= joined_at)
 );
@@ -138,6 +208,16 @@ CREATE TABLE family_invite (
     FOREIGN KEY (group_id, created_by) REFERENCES family_member (group_id, user_id) DEFERRABLE INITIALLY DEFERRED
 );
 
+-- 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 초대 링크로 재합류 불가, 방장이 해제하면 다시 가능
+CREATE TABLE family_block (
+    group_id    uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
+    user_id     uuid NOT NULL REFERENCES app_user(id),
+    created_by  uuid NOT NULL,              -- 방장 (R__005 트리거가 검사)
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (group_id, user_id),
+    FOREIGN KEY (group_id, created_by) REFERENCES family_member (group_id, user_id) DEFERRABLE INITIALLY DEFERRED
+);
+
 -- 조부모님 배송지. 조부모님은 앱에 로그인하지 않고 신문으로 받으시므로 주소만 저장한다.
 -- 주문(print_order)에는 주문 시점의 주소를 복사해 두므로, 여기서 주소를 고치거나 지워도 이미 보낸 주문의 기록은 바뀌지 않는다.
 CREATE TABLE delivery_address (
@@ -145,15 +225,30 @@ CREATE TABLE delivery_address (
     group_id        uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
     label           text NOT NULL,          -- 예: 친할머니·친할아버지 댁
     recipient_name  text NOT NULL,
-    recipient_phone text,                   -- 개인정보: 접근을 제한하고 필요하면 암호화한다 (TODO.md)
+    recipient_phone bytea,                  -- pgcrypto pgp_sym_encrypt() 로 암호화. 키는 앱이 관리(DELIVERY_PII_KEY), DB 에는 없음
+    -- 수신자(조부모) 정보 (RCV-01): 호칭 결정에 성별이 필요하다(기술 필수). 부부 수신이면 성별을 안 쓰고
+    -- 호칭 대응표의 "부부 수신" 칸을 쓴다. 사진 필수 여부는 미결(O-16)이라 NULL 허용
+    recipient_type  text NOT NULL DEFAULT 'single' CHECK (recipient_type IN ('single', 'couple')),
+    recipient_gender text CHECK (recipient_gender IN ('female', 'male')),
+    recipient_photo_key text,
     postal_code     text NOT NULL,
-    address_line1   text NOT NULL,
-    address_line2   text,
+    address_line1   bytea NOT NULL,          -- 암호화 (recipient_phone 과 같은 방식)
+    address_line2   bytea,
     memo            text,                   -- 배송 메모 (예: 경비실에 맡겨 주세요)
     created_by      uuid NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now(),
+    CHECK (recipient_type = 'couple' OR recipient_gender IS NOT NULL),
     FOREIGN KEY (group_id, created_by) REFERENCES family_member (group_id, user_id) DEFERRABLE INITIALLY DEFERRED
+);
+
+-- 배송지 열람/다운로드 기록. 운영자(operator)가 Admin 페이지에서 봤을 때만 남는다 (ADM-01: 배송지는 Admin에서만 열람)
+CREATE TABLE delivery_address_access_log (
+    id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    delivery_address_id uuid NOT NULL REFERENCES delivery_address(id) ON DELETE CASCADE,
+    operator_id         uuid NOT NULL REFERENCES operator(id),
+    action              text NOT NULL CHECK (action IN ('view', 'download')),
+    accessed_at         timestamptz NOT NULL DEFAULT now()
 );
 
 -- =========================================================
@@ -166,9 +261,9 @@ CREATE TABLE issue (
     period_start    date NOT NULL,          -- 이 호에 실리는 게시물의 기간 (그룹 타임존 기준 날짜)
     period_end      date NOT NULL,
     -- 상태 흐름은 아래 issue_status_transition 과 R__020_issues_lifecycle.sql 참고
-    --   collecting(수집) -> closing(마감 처리: 선별+조판) -> review(검토: 미리보기/재조판 요청 기간)
-    --   -> printing(인쇄 제작, review_window_hours 경과 시 자동 전환) -> printed(인쇄 완료/배송) -> archived
-    --   수집량 미달 시 collecting -> skipped(이번 달 미발행) -> archived
+    --   collecting(수집) -> closing(마감 처리: 선별+조판) -> review(운영자 조판 검수, 가족 미리보기 없음 V-17)
+    --   -> printing(인쇄 제작, 운영자가 수동 전환) -> printed(인쇄 완료/배송, 운영자가 수동 전환) -> archived
+    --   수집량 미달 시 collecting -> skipped(이번 호 미발행) -> archived
     status          text NOT NULL DEFAULT 'collecting'
         CHECK (status IN ('collecting','closing','review','printing',
                           'printed','skipped','archived')),
@@ -199,11 +294,15 @@ CREATE TABLE issue_status_history (
     issue_id     uuid NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
     from_status  text,
     to_status    text NOT NULL,
-    changed_by   uuid REFERENCES app_user(id),
+    changed_by   uuid REFERENCES app_user(id),      -- 가족(방장 등)이 바꾼 경우
+    operator_id  uuid REFERENCES operator(id),      -- 운영자가 Admin 페이지에서 바꾼 경우
     note         text,
-    changed_at   timestamptz NOT NULL DEFAULT now()
+    changed_at   timestamptz NOT NULL DEFAULT now(),
+    -- 둘 다 NULL = 배치가 자동으로 바꿈(예: 리뷰 기간 경과 자동 인쇄 전환). 둘 다 채워질 일은 없다
+    CHECK (NOT (changed_by IS NOT NULL AND operator_id IS NOT NULL))
 );
 CREATE INDEX ix_issue_status_history ON issue_status_history (issue_id, changed_at);
+CREATE INDEX ix_issue_status_history_operator ON issue_status_history (operator_id) WHERE operator_id IS NOT NULL;
 
 -- 허용된 상태 전이 표 (행 데이터는 R__020_issues_lifecycle.sql 이 관리한다)
 CREATE TABLE issue_status_transition (
@@ -217,19 +316,68 @@ CREATE TABLE issue_status_transition (
 -- 4. 피드 (앱 안에서 가족이 올리는 사진/글)와 호별 선별
 --    게시물은 호와 독립이다. 호는 "그 달(period_start~period_end)의 게시물을 모아 만든 결과물"이다.
 -- =========================================================
+-- 질문카드(QST-01~07): 주 1개씩 공개, 호당 2개. MVP는 팀이 작성한 고정 풀(질문 풀 관리 UI는 v2, O-23 아님)
+-- 금칙어 목록(SAFE-03). 팀이 직접 관리(운영 CRUD는 범위 밖, 지금은 DB에 직접 넣고 뺀다)
+CREATE TABLE banned_word (
+    word text PRIMARY KEY
+);
+
+CREATE TABLE question (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    app_body      text NOT NULL,        -- 앱 문구. 수신자 자리에 호칭이 자동 삽입된다(TTL-01)
+    print_body    text NOT NULL,        -- 지면용 문구. 호칭 없이 대상을 바꿔 쓴다
+    corner_name   text NOT NULL,        -- 지면 코너명 (주제형, NEWS-03)
+    kind          text NOT NULL CHECK (kind IN ('binary', 'balance', 'multiple_choice', 'short_answer')),
+    options       jsonb,                -- 선택형 질문의 선택지. 주관식은 NULL
+    target        text NOT NULL CHECK (target IN ('sender', 'recipient', 'us')),  -- 질문 소재(QST-01)
+    is_active     boolean NOT NULL DEFAULT true,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    CHECK (kind = 'short_answer' OR options IS NOT NULL)
+);
+
+-- 호에 공개된 질문 (display_order = 질문 1 / 질문 2). 발행(published_at)은 NOTI-01 이 참조
+CREATE TABLE issue_question (
+    issue_id      uuid NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
+    question_id   uuid NOT NULL REFERENCES question(id),
+    display_order int NOT NULL CHECK (display_order > 0),
+    published_at  timestamptz,
+    PRIMARY KEY (issue_id, question_id),
+    UNIQUE (issue_id, display_order)
+);
+
+-- 알림 발송 이력(NOTI-01~05, M-10). 질문 공개/마감 리마인더/발송완료 푸시를 보낼 때마다 한 행
+CREATE TABLE notification_log (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id     uuid NOT NULL REFERENCES app_user(id),
+    issue_id    uuid REFERENCES issue(id),
+    question_id uuid REFERENCES question(id),  -- kind='question_published' 일 때만 채움 (호당 질문 2개라 issue_id 만으론 중복 방지가 안 됨)
+    kind        text NOT NULL CHECK (kind IN ('question_published', 'deadline_reminder', 'published')),
+    sent_at     timestamptz NOT NULL DEFAULT now()
+);
+-- 중복 발송 방지: question_published는 (user, question) 단위, 나머지는 (user, issue) 단위로 한 번만
+CREATE UNIQUE INDEX ux_notification_log_question  ON notification_log (user_id, question_id) WHERE kind = 'question_published';
+CREATE UNIQUE INDEX ux_notification_log_reminder   ON notification_log (user_id, issue_id)    WHERE kind = 'deadline_reminder';
+CREATE UNIQUE INDEX ux_notification_log_published  ON notification_log (user_id, issue_id)    WHERE kind = 'published';
+
 CREATE TABLE post (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id    uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
     author_id   uuid NOT NULL,
-    body        text,                       -- 글 (사진만 올릴 수도 있다)
+    body        text,                       -- 글 (사진만 올릴 수도 있다). 질문 답변의 "한 줄 덧붙이기"/주관식 답도 여기
+    question_id uuid REFERENCES question(id),  -- NULL = 자유 게시물, NOT NULL = 질문 답변(QST-03)
+    question_option text,                    -- 선택형 질문에서 고른 선택지 (주관식/자유 게시물은 NULL)
+    visibility  text NOT NULL DEFAULT 'all' CHECK (visibility IN ('all', 'recipient_only')),  -- POST-02/QST-03
     posted_at   timestamptz NOT NULL DEFAULT now(),   -- 어느 호에 실릴지를 정한다 (그룹 타임존 기준 날짜)
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
     deleted_at  timestamptz,                -- 삭제한 글. 이미 마감된 호의 내용은 바뀌지 않는다
     UNIQUE (id, group_id),                  -- 복합 외래키(사진/텍스트가 같은 그룹만 참조)의 대상
+    CHECK (question_id IS NOT NULL OR question_option IS NULL),
     -- 작성자는 그 그룹의 구성원이어야 한다 (활동 중인지는 R__030 트리거가 검사)
     FOREIGN KEY (group_id, author_id) REFERENCES family_member (group_id, user_id) DEFERRABLE INITIALLY DEFERRED
 );
+-- 한 질문에는 1명당 답변 1개(삭제되지 않은 것만, M-03)
+CREATE UNIQUE INDEX ux_post_question_author ON post (group_id, question_id, author_id) WHERE deleted_at IS NULL AND question_id IS NOT NULL;
 
 CREATE TABLE media (
     id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -296,6 +444,31 @@ CREATE TABLE text_block (
     created_at       timestamptz NOT NULL DEFAULT now(),
     FOREIGN KEY (issue_id, group_id) REFERENCES issue (id, group_id) ON DELETE CASCADE,
     FOREIGN KEY (post_id, group_id)  REFERENCES post (id, group_id) ON DELETE SET NULL (post_id)
+);
+
+-- 질문카드 답변 댓글(QST-06). 답변(post.question_id IS NOT NULL) 단위, 1뎁스(댓글에 댓글 없음 - 자기참조 컬럼이 없어 구조적으로 막힘)
+CREATE TABLE comment (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    post_id    uuid NOT NULL REFERENCES post(id) ON DELETE CASCADE,
+    author_id  uuid NOT NULL,
+    body       text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    deleted_at timestamptz
+);
+
+-- 콘텐츠 신고(SAFE-01). target_id 는 다형 참조라 FK 를 걸지 않는다(override.target_id 와 같은 이유, 신고 뒤
+-- 대상이 지워져도 신고 기록은 남아야 한다). ADM-05: 운영자가 24시간 안 확인·조치
+CREATE TABLE report (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    reporter_id uuid NOT NULL REFERENCES app_user(id),
+    target_type text NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_id   uuid NOT NULL,
+    reason      text NOT NULL,
+    status      text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved')),
+    resolved_by uuid REFERENCES operator(id),
+    resolved_at timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    CHECK (status = 'pending' OR (resolved_by IS NOT NULL AND resolved_at IS NOT NULL))
 );
 
 -- =========================================================
@@ -373,7 +546,7 @@ CREATE INDEX ix_placement_text_block ON placement (text_block_id);
 
 -- =========================================================
 -- 6. 협업: 수동 보정 / 락
---    승인 절차는 없다 (review_window_hours 안에 재조판 요청만 가능, 지나면 자동 printing 전환)
+--    승인 절차는 없다. review 단계의 수정(override)은 운영자의 조판 검수(ADM-03)에서만 쓴다 - 가족은 쓰지 않음
 -- =========================================================
 CREATE TABLE override (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -383,8 +556,11 @@ CREATE TABLE override (
     target_type  text NOT NULL CHECK (target_type IN ('page','placement','media')),
     target_id    uuid NOT NULL,
     op           jsonb NOT NULL,   -- move/resize/swap/crop/pin/exclude ...
-    author_id    uuid NOT NULL REFERENCES app_user(id),
+    author_id    uuid REFERENCES app_user(id),      -- 가족이 만든 수정
+    operator_id  uuid REFERENCES operator(id),      -- 운영자가 조판 검수(ADM-03)에서 만든 수정
     created_at   timestamptz NOT NULL DEFAULT now(),
+    -- 작성자는 가족 또는 운영자 중 정확히 하나 (배치가 자동으로 만드는 수정은 없다)
+    CHECK ((author_id IS NOT NULL) <> (operator_id IS NOT NULL)),
     -- 수정이 가리키는 조판이 이 호의 조판이어야 한다
     FOREIGN KEY (run_id, issue_id) REFERENCES layout_run (id, issue_id) ON DELETE CASCADE
 );
@@ -431,6 +607,14 @@ CREATE TABLE print_job (
     FOREIGN KEY (run_id, issue_id) REFERENCES layout_run (id, issue_id)
 );
 
+-- 신문 PDF 열람 기록(M-12, PUB-02). 발송 완료 후 가족이 앱에서 PDF 를 열 때마다 한 행
+CREATE TABLE newsletter_view_log (
+    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    print_job_id uuid NOT NULL REFERENCES print_job(id),
+    user_id      uuid NOT NULL REFERENCES app_user(id),
+    viewed_at    timestamptz NOT NULL DEFAULT now()
+);
+
 -- 인쇄 주문 1건 = 배송지 1곳. 같은 인쇄 작업(PDF)으로 조부모님 댁마다 주문을 하나씩 만든다.
 -- 받는 사람/주소는 주문 시점의 값을 복사해 둔다 (배송지를 나중에 고치거나 지워도 이미 보낸 주문의 기록이 바뀌지 않게).
 -- R__080_printing_guards.sql 의 트리거가 "같은 그룹의 배송지", "활동 중인 구성원의 주문"을 검사한다.
@@ -441,10 +625,10 @@ CREATE TABLE print_order (
     delivery_address_id uuid REFERENCES delivery_address(id) ON DELETE SET NULL,   -- 어느 배송지에서 복사했는지 (참고용)
     ordered_by          uuid NOT NULL REFERENCES app_user(id),
     recipient_name      text NOT NULL,
-    recipient_phone     text,
+    recipient_phone     bytea,                  -- delivery_address 와 같은 방식(pgcrypto)으로 암호화해서 복사
     postal_code         text NOT NULL,
-    address_line1       text NOT NULL,
-    address_line2       text,
+    address_line1       bytea NOT NULL,          -- delivery_address 와 같은 방식(pgcrypto)으로 암호화해서 복사
+    address_line2       bytea,
     vendor              text,
     quantity            int NOT NULL DEFAULT 1 CHECK (quantity > 0),
     price               numeric(12,2),
@@ -485,32 +669,51 @@ CREATE INDEX ix_media_post           ON media (post_id);
 CREATE INDEX ix_issue_media_media    ON issue_media (media_id);
 CREATE INDEX ix_text_block_issue     ON text_block (issue_id);
 CREATE INDEX ix_text_block_post      ON text_block (post_id);
+CREATE INDEX ix_comment_post         ON comment (post_id);
+CREATE INDEX ix_post_question        ON post (question_id) WHERE question_id IS NOT NULL;
+CREATE INDEX ix_report_status        ON report (status) WHERE status = 'pending';
+CREATE INDEX ix_notification_log_issue ON notification_log (issue_id);
+CREATE INDEX ix_newsletter_view_log_job ON newsletter_view_log (print_job_id);
 -- 진행 뷰가 페이지/호/인쇄 단위로 "가장 최근 1건"을 찾는 경로
 CREATE INDEX ix_override_issue       ON override (issue_id);
 CREATE INDEX ix_print_job_issue      ON print_job (issue_id, seq DESC);
 CREATE INDEX ix_print_job_run        ON print_job (run_id);
 CREATE INDEX ix_print_order_job      ON print_order (print_job_id, seq DESC);
 CREATE INDEX ix_print_order_address  ON print_order (delivery_address_id);
+CREATE INDEX ix_delivery_address_access_log ON delivery_address_access_log (delivery_address_id, accessed_at);
 
 -- =========================================================
 -- 10. 테이블 소유 모듈 + 설명 (소유권의 단일 기준)
 --     형식: 'module:<모듈> | <설명>'. db/tests/architecture.sql 이 형식을 검사하고
 --     docs/erd.md 생성기(scripts/gen_erd.py)가 이 코멘트로 모듈별로 묶는다.
 -- =========================================================
-COMMENT ON TABLE app_user                IS 'module:identity | 사용자. 탈퇴하면 익명화하고 행은 유지한다';
+COMMENT ON TABLE app_user                IS 'module:identity | 사용자. 프로필(사진·생일)과 가입 동의 기록(ACC-03) 포함. 탈퇴하면 익명화하고 행은 유지한다';
 COMMENT ON TABLE auth_identity           IS 'module:identity | 로그인 수단(카카오/애플). (provider, provider_uid)로 식별';
-COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id)과 월 마감/검토 정책(마감일, 타임존, 미달 시 자동 미발행, 재조판 요청 가능 시간)';
-COMMENT ON TABLE family_member           IS 'module:groups | 그룹 구성원. 나가도 행은 남기고 left_at 만 채운다';
+COMMENT ON TABLE device                  IS 'module:identity | 푸시 알림용 디바이스 토큰(Expo). 발행완료/마감 임박 등에 쓴다';
+COMMENT ON TABLE waitlist_signup          IS 'module:identity | 정식 출시 대기 신청(WAIT-01). 결제 의향 확인용(M-13)';
+COMMENT ON TABLE user_block               IS 'module:identity | 개인 차단(SAFE-02). 차단한 사람의 콘텐츠를 숨긴다';
+COMMENT ON TABLE operator                IS 'module:admin | 운영자 계정(Admin 페이지). 가족(app_user)과 분리된 역할(staff_write/staff_read/printshop_read) 기반 로그인';
+COMMENT ON TABLE operator_alert_log      IS 'module:admin | 조판 실패(3회)·신고 접수 시 팀 메일 발송 대상(ADM-08)';
+COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id)과 마감 정책(마감일, 타임존, 미달 시 자동 미발행)';
+COMMENT ON TABLE family_member           IS 'module:groups | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다';
 COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시, 만료, 사용 횟수, 취소). 방장만 만든다';
-COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지(주소만, 로그인 없음). 주문에는 복사본을 남긴다';
+COMMENT ON TABLE family_block            IS 'module:groups | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가';
+COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지 + 수신자(성별·사진·1인/부부) 정보. 주문에는 복사본을 남긴다';
+COMMENT ON TABLE delivery_address_access_log IS 'module:groups | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01)';
 COMMENT ON TABLE template                IS 'module:templates | 불변 버전의 판형 템플릿과 규모 제약(사진/페이지 수)';
 COMMENT ON TABLE page_master             IS 'module:templates | 페이지 마스터(슬롯 배치 정의)';
 COMMENT ON TABLE style                   IS 'module:templates | 문단/글자 스타일(상속 구조)';
 COMMENT ON TABLE font                    IS 'module:templates | 폰트 메타데이터';
 COMMENT ON TABLE issue                   IS 'module:issues | 월간 호. 그 달의 게시물을 모아 만든 결과물. 상태는 change_issue_status()로만 바꾼다';
-COMMENT ON TABLE issue_status_history    IS 'module:issues | 호 상태 변경 이력';
+COMMENT ON TABLE issue_status_history    IS 'module:issues | 호 상태 변경 이력. changed_by(가족) 또는 operator_id(운영자) 중 하나만 채워짐, 둘 다 NULL이면 배치가 자동 변경';
 COMMENT ON TABLE issue_status_transition IS 'module:issues | 허용된 상태 전이 표';
-COMMENT ON TABLE post                    IS 'module:feed | 피드 게시물(글). 호와 독립이고 posted_at 으로 어느 호에 실릴지 정해진다';
+COMMENT ON TABLE notification_log        IS 'module:feed | 알림 발송 이력(질문 공개/마감 리마인더/발송완료, NOTI-01~05, M-10). question 을 참조해서 issues 가 아니라 feed 소속';
+COMMENT ON TABLE banned_word              IS 'module:feed | 금칙어 목록(SAFE-03). 게시물·답변·댓글 등록을 막는 기준';
+COMMENT ON TABLE question                IS 'module:feed | 질문카드 풀. MVP는 팀이 작성한 고정 풀(QST-02)';
+COMMENT ON TABLE issue_question          IS 'module:feed | 호에 공개된 질문(호당 2개, display_order). 공개 시각은 NOTI-01 이 참조';
+COMMENT ON TABLE post                    IS 'module:feed | 피드 게시물(글) 또는 질문 답변(question_id). 호와 독립이고 posted_at 으로 어느 호에 실릴지 정해진다';
+COMMENT ON TABLE comment                 IS 'module:feed | 질문 답변 댓글(QST-06), 1뎁스';
+COMMENT ON TABLE report                  IS 'module:feed | 콘텐츠 신고(SAFE-01). 운영자가 확인·조치(ADM-05)';
 COMMENT ON TABLE media                   IS 'module:feed | 게시물의 사진. 이미지 분석 결과와 사용자의 의도(꼭 넣기/빼기)';
 COMMENT ON TABLE media_rendition         IS 'module:feed | 사진의 파생본(썸네일/미리보기/인쇄용)';
 COMMENT ON TABLE issue_media             IS 'module:feed | 호별 사진 선별 결과(후보/선택/제외와 점수). 마감할 때 만들어진다';
@@ -519,7 +722,8 @@ COMMENT ON TABLE layout_run              IS 'module:layout | 자동 조판 실�
 COMMENT ON TABLE page                    IS 'module:layout | 조판 결과의 페이지';
 COMMENT ON TABLE placement               IS 'module:layout | 페이지 위 요소 배치(mm 단위)';
 COMMENT ON TABLE preview                 IS 'module:layout | 페이지 미리보기 렌더 결과';
-COMMENT ON TABLE override                IS 'module:review | 사람의 수정 로그(seq 순서). 재조판 요청 시 반영';
+COMMENT ON TABLE override                IS 'module:review | 사람의 수정 로그(seq 순서). 가족(author_id) 또는 운영자(operator_id)가 조판 검수 때 만든다';
 COMMENT ON TABLE page_lock               IS 'module:review | 페이지 편집 락';
 COMMENT ON TABLE print_job               IS 'module:printing | PDF 생성/프리플라이트 작업';
+COMMENT ON TABLE newsletter_view_log     IS 'module:printing | 신문 PDF 열람 기록(M-12, PUB-02)';
 COMMENT ON TABLE print_order             IS 'module:printing | 인쇄 주문 1건 = 배송지 1곳. 받는 사람/주소는 주문 시점의 복사본';

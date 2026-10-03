@@ -20,14 +20,17 @@ INSERT INTO family_member (group_id, user_id, nickname) VALUES
     ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-000000000001', '엄마'),
     ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-000000000002', '아빠');
 
-INSERT INTO delivery_address (id, group_id, label, recipient_name, recipient_phone, postal_code,
+-- recipient_phone/address_line1/2 는 pgcrypto 로 암호화해서 저장한다 (키는 앱의 DELIVERY_PII_KEY, 여기선 dev 값 'dev-only-change-me')
+INSERT INTO delivery_address (id, group_id, label, recipient_name, recipient_type, recipient_phone, postal_code,
                               address_line1, address_line2, created_by) VALUES
     ('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000d1',
-     '친할머니·친할아버지 댁', '김가상', '010-0000-0000', '00000', '서울특별시 가상구 가상로 1', '101동 101호',
-     '00000000-0000-0000-0000-000000000001'),
+     '친할머니·친할아버지 댁', '김가상', 'couple', pgp_sym_encrypt('010-0000-0000', 'dev-only-change-me'),
+     '00000', pgp_sym_encrypt('서울특별시 가상구 가상로 1', 'dev-only-change-me'),
+     pgp_sym_encrypt('101동 101호', 'dev-only-change-me'), '00000000-0000-0000-0000-000000000001'),
     ('00000000-0000-0000-0000-0000000000e2', '00000000-0000-0000-0000-0000000000d1',
-     '외할머니·외할아버지 댁', '이가상', '010-0000-0001', '00001', '부산광역시 가상구 가상로 2', NULL,
-     '00000000-0000-0000-0000-000000000001');
+     '외할머니·외할아버지 댁', '이가상', 'couple', pgp_sym_encrypt('010-0000-0001', 'dev-only-change-me'),
+     '00001', pgp_sym_encrypt('부산광역시 가상구 가상로 2', 'dev-only-change-me'),
+     NULL, '00000000-0000-0000-0000-000000000001');
 
 INSERT INTO issue (id, group_id, title, period_start, period_end, close_at, template_id,
                    min_photos, max_photos, min_pages, max_pages, page_multiple)

@@ -44,6 +44,21 @@ DROP TRIGGER IF EXISTS trg_invite_creator ON family_invite;
 CREATE TRIGGER trg_invite_creator BEFORE INSERT ON family_invite
     FOR EACH ROW EXECUTE FUNCTION guard_invite_creator();
 
+-- 차단 목록(family_block)도 방장만 등록할 수 있다 (FAM-09/10)
+CREATE OR REPLACE FUNCTION guard_family_block_creator() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM family_group g WHERE g.id = NEW.group_id AND g.owner_id = NEW.created_by) THEN
+        RAISE EXCEPTION 'family_block: only the owner of group % can block members', NEW.group_id
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_family_block_creator ON family_block;
+CREATE TRIGGER trg_family_block_creator BEFORE INSERT ON family_block
+    FOR EACH ROW EXECUTE FUNCTION guard_family_block_creator();
+
 -- 배송지는 그 그룹의 활동 중인 구성원이 등록한다
 CREATE OR REPLACE FUNCTION guard_address_creator() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -82,6 +97,9 @@ BEGIN
     IF is_active_member(v.group_id, p_user) THEN
         RETURN v.group_id;
     END IF;
+    IF EXISTS (SELECT 1 FROM family_block WHERE group_id = v.group_id AND user_id = p_user) THEN
+        RAISE EXCEPTION 'user % is blocked from group %', p_user, v.group_id USING ERRCODE = 'insufficient_privilege';
+    END IF;
     IF v.max_uses IS NOT NULL AND v.use_count >= v.max_uses THEN
         RAISE EXCEPTION 'invite exhausted';
     END IF;
@@ -118,6 +136,26 @@ BEGIN
     UPDATE family_member SET left_at = now()
      WHERE group_id = p_group AND user_id = p_target AND left_at IS NULL;
     IF NOT FOUND THEN RAISE EXCEPTION 'member % not found or already left', p_target; END IF;
+
+    IF p_actor <> p_target THEN  -- 방장이 내보낸 경우 차단 목록에 등록 (FAM-09). 스스로 나간 경우는 차단하지 않음
+        INSERT INTO family_block (group_id, user_id, created_by) VALUES (p_group, p_target, p_actor)
+        ON CONFLICT (group_id, user_id) DO NOTHING;
+    END IF;
+END $$;
+
+-- 차단 해제: 방장만 할 수 있다. 해제하면 같은 초대 링크로 다시 합류 가능 (FAM-10)
+CREATE OR REPLACE FUNCTION unblock_family_member(p_group uuid, p_actor uuid, p_target uuid)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_owner uuid;
+BEGIN
+    SELECT owner_id INTO v_owner FROM family_group WHERE id = p_group;
+    IF NOT FOUND THEN RAISE EXCEPTION 'family group % not found', p_group; END IF;
+    IF p_actor <> v_owner THEN
+        RAISE EXCEPTION 'only the owner can unblock' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    DELETE FROM family_block WHERE group_id = p_group AND user_id = p_target;
 END $$;
 
 -- 방장 넘기기: 현재 방장만 할 수 있고, 새 방장은 활동 중인 구성원이어야 한다

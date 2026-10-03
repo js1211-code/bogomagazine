@@ -1,8 +1,5 @@
 -- layout 모듈 테스트. 전체 실행: ./scripts/db.sh test
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
---
--- TODO(승인 절차 제거, review_auto_publish_patch): T63 이 삭제된 approval 테이블을 참조한다
--- (approved_pages/changes_requested_pages 컬럼도 v_issue_progress 에서 제거됨). 다시 작성 필요.
 \echo == layout
 
 \echo T47 조판 큐: closing 이면 노출, 조판 진행/완료 또는 실패 3회면 제외
@@ -34,8 +31,8 @@ ROLLBACK;
 BEGIN;
 DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1';
-        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
-        v_r1 uuid; v_r2 uuid; v_p uuid; v_oct uuid; p record;
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_r1 uuid; v_r2 uuid; v_p uuid; v_oct uuid; v_job uuid; v_seq1 bigint; v_seq2 bigint;
 BEGIN
   PERFORM change_issue_status(v, 'closing');
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status, created_at)
@@ -52,17 +49,22 @@ BEGIN
 
   INSERT INTO page (run_id, page_no) VALUES (v_r2, 1) RETURNING id INTO v_p;
   PERFORM change_issue_status(v, 'review');
-  -- 승인 3건이 모두 같은 시각이어도 마지막에 넣은 것이 최신
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at)
-  VALUES (v, v_p, u1, 'changes_requested', '2026-10-01 10:00+09');
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at)
-  VALUES (v, v_p, u1, 'approved', '2026-10-01 10:00+09');
-  SELECT * INTO p FROM v_issue_progress WHERE issue_id = v;
-  ASSERT p.approved_pages = 1 AND p.changes_requested_pages = 0, 'T63 승인이 최신이어야 함';
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at)
-  VALUES (v, v_p, u1, 'changes_requested', '2026-10-01 10:00+09');
-  SELECT * INTO p FROM v_issue_progress WHERE issue_id = v;
-  ASSERT p.approved_pages = 0 AND p.changes_requested_pages = 1, 'T63 수정 요청이 최신이어야 함';
+  -- 수정(override) 2건이 모두 같은 시각이어도 seq(삽입 순서)로 나뉜다 (승인은 없지만 "최신 수정 번호" 판정은 printed 사전조건이 그대로 씀)
+  INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id, created_at)
+  VALUES (v, v_r2, 'page', v_p, '{"op":"a"}', u2, '2026-10-01 10:00+09') RETURNING seq INTO v_seq1;
+  INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id, created_at)
+  VALUES (v, v_r2, 'page', v_p, '{"op":"b"}', u2, '2026-10-01 10:00+09') RETURNING seq INTO v_seq2;
+  ASSERT v_seq2 > v_seq1, 'T63 같은 시각이어도 seq 는 증가';
+
+  PERFORM change_issue_status(v, 'printing');
+  INSERT INTO print_job (issue_id, run_id, override_seq, status) VALUES (v, v_r2, v_seq1, 'ready') RETURNING id INTO v_job;
+  BEGIN
+    PERFORM change_issue_status(v, 'printed');
+    RAISE EXCEPTION 'T63 failed: 낡은 override_seq 인쇄작업으로 printed 됨 (seq 가 최신 판정에 안 쓰임)';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  UPDATE print_job SET override_seq = v_seq2 WHERE id = v_job;
+  PERFORM change_issue_status(v, 'printed');
 END $$;
 ROLLBACK;
 

@@ -15,12 +15,11 @@
 --
 -- pg_cron 예 (한 번에 200건씩, 30분마다):
 --     SELECT cron.schedule('monthly-batch', '*/30 * * * *', $$SELECT * FROM run_monthly_batch()$$);
---     SELECT cron.schedule('advance-reviewed', '*/30 * * * *', $$SELECT advance_reviewed_issues()$$);
 --
 -- 하는 일
 --   1. close_due_issues : 마감 시각이 지난 collecting 호를 closing(또는 skipped)으로 넘김
 --   2. open_monthly_issues : 그룹별로 "이번 달" 호가 없으면 생성 (그룹 타임존 기준)
---   3. advance_reviewed_issues (아래 별도 함수) : review_window_hours 가 지난 review 호를 printing 으로 자동 전환
+-- review(조판 검수) -> printing -> printed 전환은 운영자가 Admin 에서 수동으로 한다(ADM-02/03, V-17) - 배치가 하지 않음.
 -- 조판은 여기서 하지 않는다. 조판 워커가 v_compose_queue 를 보고 처리한 뒤
 -- change_issue_status(issue, 'review') 로 넘긴다.
 --
@@ -163,31 +162,8 @@ BEGIN
 END $$;
 
 -- =========================================================
--- 4. 검토 기간이 지난 호를 자동으로 printing 전환
---    승인 절차가 없으므로, 그룹별 review_window_hours 가 지나면 사람의 승인 없이 바로 인쇄 단계로 넘긴다.
---    run_monthly_batch 와 같은 스케줄러(30분 주기)에 별도로 태운다 (위 pg_cron 예 참고).
---    동시 실행 안전성은 change_issue_status() 의 FOR UPDATE 행 잠금에 의존한다.
+-- 4. (제거됨) 검토 기간 자동 printing 전환
+--    기능명세서_최종_1002 기준으로 가족의 자동 재조판 요청 기간은 없다(V-17). review -> printing/printed 는
+--    운영자가 Admin 에서 조판 검수 후 수동으로만 전환한다(ADM-02/03). 이 함수는 더 쓰지 않는다.
 -- =========================================================
-CREATE OR REPLACE FUNCTION advance_reviewed_issues(p_limit int DEFAULT 200)
-RETURNS int
-LANGUAGE plpgsql AS $$
-DECLARE
-    v_count int := 0;
-    v_issue record;
-BEGIN
-    -- close_due_issues 와 같은 이유로 SKIP LOCKED: 스케줄러가 겹쳐 돌아도 같은 호를 두 번 처리하지 않는다
-    FOR v_issue IN
-        SELECT i.id
-          FROM issue i
-          JOIN family_group g ON g.id = i.group_id
-         WHERE i.status = 'review'
-           AND i.status_changed_at <= now() - make_interval(hours => g.review_window_hours)
-         ORDER BY i.status_changed_at
-         LIMIT p_limit
-           FOR UPDATE OF i SKIP LOCKED
-    LOOP
-        PERFORM change_issue_status(v_issue.id, 'printing', NULL, '검토 기간 경과 - 자동 전환 (승인 절차 없음)');
-        v_count := v_count + 1;
-    END LOOP;
-    RETURN v_count;
-END $$;
+DROP FUNCTION IF EXISTS advance_reviewed_issues(int);

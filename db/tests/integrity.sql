@@ -2,9 +2,6 @@
 -- 막혀야 하는 것(복합 외래키 / 트리거)은 막히는지, 정상 데이터는 막히지 않는지(과잉 차단 방지),
 -- 의도적으로 허용한 것은 허용되는지, 복합 키에서도 SET NULL / CASCADE 가 의도대로 동작하는지 확인한다.
 -- 전체 실행: ./scripts/db.sh test. 하나의 트랜잭션 안에서 공통 준비물을 만들고 끝에 ROLLBACK 한다.
---
--- TODO(승인 절차 제거, review_auto_publish_patch): T104/T116 이 삭제된 approval 테이블로 복합 외래키/
--- CASCADE 정합성을 테스트한다. approval 이 없어졌으니 override 쪽 정합성 테스트로 대체하거나 삭제 필요.
 \echo == integrity
 BEGIN;
 
@@ -115,37 +112,8 @@ BEGIN
   INSERT INTO post (group_id, author_id, body, posted_at) VALUES (pg_temp.fx('g1'), pg_temp.fx('u2'), 'ok', '2026-10-05 12:00+09');
 END $$;
 
-\echo T104 승인: 호/조판/페이지가 서로 어긋나면 거부, 일관된 승인과 호 전체 승인은 허용, 구성원이 아니면 거부
-DO $$ BEGIN
-  BEGIN
-    INSERT INTO approval (issue_id, page_id, run_id, user_id, status) VALUES (pg_temp.fx('a'), pg_temp.fx('pa'), pg_temp.fx('ra2'), pg_temp.fx('u1'), 'approved');
-    RAISE EXCEPTION 'T104 failed: 페이지의 조판과 다른 조판으로 승인됨';
-  EXCEPTION WHEN check_violation OR foreign_key_violation THEN NULL;
-  END;
-  BEGIN
-    INSERT INTO approval (issue_id, page_id, user_id, status) VALUES (pg_temp.fx('b'), pg_temp.fx('pa'), pg_temp.fx('u1'), 'approved');
-    RAISE EXCEPTION 'T104 failed: 다른 호의 페이지가 승인됨';
-  EXCEPTION WHEN check_violation OR foreign_key_violation THEN NULL;
-  END;
-  BEGIN
-    INSERT INTO approval (issue_id, run_id, user_id, status) VALUES (pg_temp.fx('a'), pg_temp.fx('rb'), pg_temp.fx('u1'), 'approved');
-    RAISE EXCEPTION 'T104 failed: 다른 호의 조판으로 호 전체가 승인됨';
-  EXCEPTION WHEN check_violation OR foreign_key_violation THEN NULL;
-  END;
-  BEGIN
-    INSERT INTO approval (issue_id, page_id, user_id, status) VALUES (pg_temp.fx('a'), pg_temp.fx('pa'), pg_temp.fx('u3'), 'approved');
-    RAISE EXCEPTION 'T104 failed: 다른 그룹 사람이 승인함';
-  EXCEPTION WHEN check_violation THEN NULL;
-  END;
-  BEGIN
-    INSERT INTO approval (issue_id, page_id, user_id, status) VALUES (pg_temp.fx('a'), pg_temp.fx('pa'), pg_temp.fx('u4'), 'approved');
-    RAISE EXCEPTION 'T104 failed: 나간 사람이 승인함';
-  EXCEPTION WHEN check_violation THEN NULL;
-  END;
-  INSERT INTO approval (issue_id, page_id, user_id, status) VALUES (pg_temp.fx('a'), pg_temp.fx('pa'), pg_temp.fx('u1'), 'approved');
-  INSERT INTO approval (issue_id, user_id, status) VALUES (pg_temp.fx('a'), pg_temp.fx('u2'), 'approved');
-  ASSERT (SELECT run_id FROM approval WHERE page_id = pg_temp.fx('pa') LIMIT 1) = pg_temp.fx('ra1'), 'T104 run_id 자동 기록';
-END $$;
+-- T104(승인 정합성)는 approval 테이블 삭제로 제거됨: T105(override, 아래)가 같은 성격의 정합성을
+-- (호/조판/페이지 일치, 작성자가 그룹의 활동 중인 구성원인지) 이미 검증하고 있어 중복 작성하지 않는다.
 
 \echo T105 수정로그: 가리키는 조판은 그 호의 조판, 작성자는 그 그룹의 활동 중인 구성원
 DO $$ BEGIN
@@ -159,6 +127,12 @@ DO $$ BEGIN
     INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id)
     VALUES (pg_temp.fx('a'), pg_temp.fx('ra1'), 'page', pg_temp.fx('pa'), '{}', pg_temp.fx('u3'));
     RAISE EXCEPTION 'T105 failed: 다른 그룹 사람의 수정이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id)
+    VALUES (pg_temp.fx('a'), pg_temp.fx('ra1'), 'page', pg_temp.fx('pa'), '{}', pg_temp.fx('u4'));
+    RAISE EXCEPTION 'T105 failed: 나간 사람의 수정이 저장됨';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
   INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id)
@@ -218,24 +192,24 @@ DECLARE
   v_job uuid; v_addr2 uuid; v_order uuid;
 BEGIN
   INSERT INTO print_job (issue_id, run_id, override_seq, status) VALUES (pg_temp.fx('a'), pg_temp.fx('ra1'), 0, 'ready') RETURNING id INTO v_job;
-  INSERT INTO delivery_address (group_id, label, recipient_name, postal_code, address_line1, created_by)
-  VALUES (pg_temp.fx('g2'), '다른 집 조부모', '박가상', '00009', '어딘가', pg_temp.fx('u3')) RETURNING id INTO v_addr2;
+  INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
+  VALUES (pg_temp.fx('g2'), '다른 집 조부모', '박가상', 'female', '00009', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), pg_temp.fx('u3')) RETURNING id INTO v_addr2;
 
   BEGIN
     INSERT INTO print_order (print_job_id, delivery_address_id, ordered_by, recipient_name, postal_code, address_line1)
-    VALUES (v_job, v_addr2, pg_temp.fx('u1'), '박가상', '00009', '어딘가');
+    VALUES (v_job, v_addr2, pg_temp.fx('u1'), '박가상', '00009', pgp_sym_encrypt('어딘가', 'dev-only-change-me'));
     RAISE EXCEPTION 'T109 failed: 다른 그룹의 배송지로 주문됨';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
   BEGIN
     INSERT INTO print_order (print_job_id, delivery_address_id, ordered_by, recipient_name, postal_code, address_line1)
-    VALUES (v_job, e1, pg_temp.fx('u3'), '김가상', '00000', '주소');
+    VALUES (v_job, e1, pg_temp.fx('u3'), '김가상', '00000', pgp_sym_encrypt('주소', 'dev-only-change-me'));
     RAISE EXCEPTION 'T109 failed: 다른 그룹 사람이 주문함';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
   BEGIN
     INSERT INTO print_order (print_job_id, delivery_address_id, ordered_by, recipient_name, postal_code, address_line1)
-    VALUES (v_job, e1, pg_temp.fx('u4'), '김가상', '00000', '주소');
+    VALUES (v_job, e1, pg_temp.fx('u4'), '김가상', '00000', pgp_sym_encrypt('주소', 'dev-only-change-me'));
     RAISE EXCEPTION 'T109 failed: 나간 사람이 주문함';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
@@ -244,7 +218,8 @@ BEGIN
   SELECT v_job, id, pg_temp.fx('u1'), recipient_name, recipient_phone, postal_code, address_line1 FROM delivery_address WHERE id = e1
   RETURNING id INTO v_order;
   DELETE FROM delivery_address WHERE id = e1;
-  ASSERT (SELECT delivery_address_id IS NULL AND recipient_name = '김가상' AND address_line1 LIKE '서울%' FROM print_order WHERE id = v_order),
+  ASSERT (SELECT delivery_address_id IS NULL AND recipient_name = '김가상'
+            AND pgp_sym_decrypt(address_line1, 'dev-only-change-me') LIKE '서울%' FROM print_order WHERE id = v_order),
          'T109 배송지 삭제 후 주문 기록';
 END $$;
 
@@ -295,19 +270,17 @@ BEGIN
   END;
 END $$;
 
-\echo T116 복합 외래키의 CASCADE: 조판을 지우면 그 조판의 페이지/승인/수정/미리보기가 함께 지워진다
+\echo T116 복합 외래키의 CASCADE: 조판을 지우면 그 조판의 페이지/수정/미리보기가 함께 지워진다
 DO $$
 DECLARE v_run uuid; v_pg uuid;
 BEGIN
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
   VALUES (pg_temp.fx('a'), '00000000-0000-0000-0000-0000000000a1', '0.1', 77, 'h', 'done') RETURNING id INTO v_run;
   INSERT INTO page (run_id, page_no) VALUES (v_run, 1) RETURNING id INTO v_pg;
-  INSERT INTO approval (issue_id, page_id, user_id, status) VALUES (pg_temp.fx('a'), v_pg, pg_temp.fx('u1'), 'approved');
   INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id) VALUES (pg_temp.fx('a'), v_run, 'page', v_pg, '{}', pg_temp.fx('u1'));
   INSERT INTO preview (run_id, override_seq, page_no) VALUES (v_run, 0, 1);
   DELETE FROM layout_run WHERE id = v_run;
   ASSERT (SELECT count(*) FROM page WHERE run_id = v_run) = 0, 'T116 page';
-  ASSERT (SELECT count(*) FROM approval WHERE run_id = v_run) = 0, 'T116 approval';
   ASSERT (SELECT count(*) FROM override WHERE run_id = v_run) = 0, 'T116 override';
   ASSERT (SELECT count(*) FROM preview WHERE run_id = v_run) = 0, 'T116 preview';
 END $$;

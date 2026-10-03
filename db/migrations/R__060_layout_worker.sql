@@ -129,11 +129,21 @@ CREATE OR REPLACE FUNCTION fail_compose_job(
     p_run uuid, p_worker text, p_error text, p_now timestamptz DEFAULT now())
 RETURNS boolean
 LANGUAGE plpgsql AS $$
+DECLARE
+    v_issue uuid; v_attempts int;
 BEGIN
     UPDATE layout_run
        SET status = 'failed', finished_at = p_now, log = left(p_error, 2000)
-     WHERE id = p_run AND status = 'running' AND locked_by = p_worker;
-    RETURN FOUND;
+     WHERE id = p_run AND status = 'running' AND locked_by = p_worker
+    RETURNING issue_id, attempts INTO v_issue, v_attempts;
+
+    IF NOT FOUND THEN RETURN false; END IF;
+
+    -- 3번째 시도까지 실패하면(큐에서 빠짐, v_compose_queue 와 같은 기준) 운영 알림(ADM-08)
+    IF v_attempts >= 3 THEN
+        INSERT INTO operator_alert_log (kind, ref_type, ref_id) VALUES ('layout_failed', 'issue', v_issue);
+    END IF;
+    RETURN true;
 END $$;
 
 -- =========================================================

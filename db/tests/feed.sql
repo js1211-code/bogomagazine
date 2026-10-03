@@ -234,6 +234,128 @@ BEGIN
 END $$;
 ROLLBACK;
 
+\echo T120 질문카드(QST-01~03): 호에 공개된 질문에 답변, 1인당 질문당 답변은 1개(삭제되지 않은 것만)
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        q uuid; v_post uuid;
+BEGIN
+  INSERT INTO question (app_body, print_body, corner_name, kind, options, target)
+  VALUES ('{{호칭}}은 어떤 음식을 좋아하세요?', '좋아하는 음식', '우리 가족 이야기', 'multiple_choice',
+          '["한식","중식","양식"]', 'recipient') RETURNING id INTO q;
+  INSERT INTO issue_question (issue_id, question_id, display_order, published_at) VALUES (a, q, 1, now());
+
+  INSERT INTO post (group_id, author_id, body, question_id, question_option, posted_at)
+  VALUES (g, u1, '엄마는 한식 좋아하세요', q, '한식', '2026-09-20 12:00+09') RETURNING id INTO v_post;
+
+  BEGIN
+    INSERT INTO post (group_id, author_id, question_id, question_option, posted_at)
+    VALUES (g, u1, q, '중식', '2026-09-21 12:00+09');
+    RAISE EXCEPTION 'T120 failed: 같은 질문에 중복 답변이 저장됨';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+
+  -- 삭제하면 다시 답변 가능
+  UPDATE post SET deleted_at = now() WHERE id = v_post;
+  INSERT INTO post (group_id, author_id, question_id, question_option, posted_at)
+  VALUES (g, u1, q, '양식', '2026-09-21 12:00+09');
+
+  BEGIN
+    INSERT INTO post (group_id, author_id, question_id, question_option, posted_at) VALUES (g, u1, NULL, '한식', now());
+    RAISE EXCEPTION 'T120 failed: question_id 없이 question_option 이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+ROLLBACK;
+
+\echo T121 댓글(QST-06): 질문 답변에만 허용(자유 게시물 거부), 작성자는 활동 중인 구성원, 마감 후 불가
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        q uuid; v_answer uuid; v_free uuid;
+BEGIN
+  INSERT INTO question (app_body, print_body, corner_name, kind, target)
+  VALUES ('한 줄 질문', '한 줄 질문(지면)', '우리 가족 이야기', 'short_answer', 'us') RETURNING id INTO q;
+  INSERT INTO issue_question (issue_id, question_id, display_order) VALUES (a, q, 1);
+  INSERT INTO post (group_id, author_id, body, question_id, posted_at)
+  VALUES (g, u1, '답변입니다', q, '2026-09-20 12:00+09') RETURNING id INTO v_answer;
+  INSERT INTO post (group_id, author_id, body, posted_at)
+  VALUES (g, u1, '자유 게시물', '2026-09-20 12:00+09') RETURNING id INTO v_free;
+
+  BEGIN
+    INSERT INTO comment (post_id, author_id, body) VALUES (v_free, u2, '자유 게시물엔 댓글 안 됨');
+    RAISE EXCEPTION 'T121 failed: 자유 게시물에 댓글이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  INSERT INTO comment (post_id, author_id, body) VALUES (v_answer, u2, '좋은 답변이네요');
+  ASSERT (SELECT count(*) FROM comment WHERE post_id = v_answer) = 1, 'T121 답변에는 댓글 허용';
+
+  BEGIN
+    INSERT INTO comment (post_id, author_id, body) VALUES (v_answer, gen_random_uuid(), '외부인');
+    RAISE EXCEPTION 'T121 failed: 그룹 밖 사람의 댓글이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  -- 마감(= collecting 이 아님)된 기간에는 댓글 불가 (assert_period_open)
+  PERFORM change_issue_status(a, 'closing');
+  BEGIN
+    INSERT INTO comment (post_id, author_id, body) VALUES (v_answer, u2, '마감 후 댓글');
+    RAISE EXCEPTION 'T121 failed: 마감 후 댓글이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+ROLLBACK;
+
+\echo T122 공개 범위(POST-02): all / recipient_only 뿐
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+BEGIN
+  INSERT INTO post (group_id, author_id, body, visibility, posted_at) VALUES (g, u1, 'x', 'recipient_only', '2026-09-20 12:00+09');
+  BEGIN
+    INSERT INTO post (group_id, author_id, body, visibility, posted_at) VALUES (g, u1, 'x', 'friends_only', '2026-09-20 12:00+09');
+    RAISE EXCEPTION 'T122 failed: 알 수 없는 visibility 값이 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+ROLLBACK;
+
+\echo T125 금칙어(SAFE-03): 게시물·댓글 등록을 막고, 포함 안 되면 통과
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        q uuid; v_answer uuid;
+BEGIN
+  INSERT INTO banned_word (word) VALUES ('나쁜말');
+
+  BEGIN
+    INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '이건 나쁜말이 섞인 글', '2026-09-20 12:00+09');
+    RAISE EXCEPTION 'T125 failed: 금칙어가 포함된 글이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '깨끗한 글', '2026-09-20 12:00+09');
+
+  INSERT INTO question (app_body, print_body, corner_name, kind, target)
+  VALUES ('질문', '질문(지면)', '코너', 'short_answer', 'us') RETURNING id INTO q;
+  INSERT INTO issue_question (issue_id, question_id, display_order) VALUES (a, q, 1);
+  INSERT INTO post (group_id, author_id, body, question_id, posted_at)
+  VALUES (g, u1, '답변', q, '2026-09-20 12:00+09') RETURNING id INTO v_answer;
+  BEGIN
+    INSERT INTO comment (post_id, author_id, body) VALUES (v_answer, u1, '나쁜말 댓글');
+    RAISE EXCEPTION 'T125 failed: 금칙어가 포함된 댓글이 저장됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
 \echo T60 hamming64: bit_count 구현이 문자열 방식과 항상 같음
 DO $$ BEGIN
   ASSERT (SELECT count(*) FROM (

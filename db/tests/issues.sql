@@ -1,9 +1,5 @@
 -- issues 모듈 테스트. 전체 실행: ./scripts/db.sh test
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
---
--- TODO(승인 절차 제거, review_auto_publish_patch): T32/T33/T55/T55b 가 삭제된 approval 테이블과
--- 'approved' 상태, approved_pages 등 v_issue_progress 컬럼을 참조한다. review_window_hours 경과 후
--- advance_reviewed_issues() 자동 전환 / review_deadline / can_request_relayout 기준으로 다시 작성 필요.
 \echo == issues
 
 \echo T01 issue: min_photos > max_photos 거부
@@ -189,33 +185,29 @@ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T32 진행상태: 검토 단계 페이지 승인 집계 (페이지별 최신 승인만 반영)
+\echo T32 진행상태: review(조판 검수) 단계는 가족 미리보기 없이 70%, 운영자가 수동으로 printing 전환하면 이력에 operator_id 기록
 BEGIN;
 DO $$
 DECLARE v_issue constant uuid := '00000000-0000-0000-0000-0000000000c1'; p record;
-        v_run uuid; v_p1 uuid; v_p2 uuid;
-        u constant uuid := '00000000-0000-0000-0000-000000000001';
+        v_run uuid; v_op uuid;
 BEGIN
+  INSERT INTO operator (name, email, role) VALUES ('검수자', 'reviewer@x.com', 'staff_write') RETURNING id INTO v_op;
+
   PERFORM change_issue_status(v_issue, 'closing');
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
   VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'done') RETURNING id INTO v_run;
-  INSERT INTO page (run_id, page_no) VALUES (v_run, 1) RETURNING id INTO v_p1;
-  INSERT INTO page (run_id, page_no) VALUES (v_run, 2) RETURNING id INTO v_p2;
+  INSERT INTO page (run_id, page_no) VALUES (v_run, 1);
   PERFORM change_issue_status(v_issue, 'review');
 
   SELECT * INTO p FROM v_issue_progress WHERE issue_id = v_issue;
-  ASSERT p.current_step = 'reviewing' AND p.total_pages = 2 AND p.approved_pages = 0 AND p.progress_pct = 50, 'T32 초기';
+  ASSERT p.current_step = 'reviewing' AND p.total_pages = 1 AND p.progress_pct = 70, format('T32 초기 step=%s pct=%s', p.current_step, p.progress_pct);
 
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at) VALUES
-    (v_issue, v_p1, u, 'approved',          '2026-10-01 10:00+09'),
-    (v_issue, v_p2, u, 'changes_requested', '2026-10-01 10:05+09');
-  SELECT * INTO p FROM v_issue_progress WHERE issue_id = v_issue;
-  ASSERT p.approved_pages = 1 AND p.changes_requested_pages = 1 AND p.progress_pct = 65, format('T32 중간 pct=%s', p.progress_pct);
-
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at)
-  VALUES (v_issue, v_p2, u, 'approved', '2026-10-01 11:00+09');
-  SELECT * INTO p FROM v_issue_progress WHERE issue_id = v_issue;
-  ASSERT p.approved_pages = 2 AND p.changes_requested_pages = 0 AND p.progress_pct = 80, format('T32 최종 pct=%s', p.progress_pct);
+  -- 운영자가 조판 검수를 마치고 printing 으로 전환 (가족 개입 없음, V-17)
+  PERFORM change_issue_status(v_issue, 'printing', NULL, '조판 검수 완료', NULL, v_op);
+  ASSERT (SELECT status FROM issue WHERE id = v_issue) = 'printing', 'T32 운영자가 printing 전환';
+  ASSERT (SELECT changed_by IS NULL AND operator_id = v_op FROM issue_status_history
+           WHERE issue_id = v_issue ORDER BY id DESC LIMIT 1),
+         'T32 운영자 전환 이력에는 operator_id 만 채워져야 함';
 END $$;
 ROLLBACK;
 
@@ -230,11 +222,8 @@ BEGIN
   VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'done') RETURNING id INTO v_run;
   INSERT INTO page (run_id, page_no) VALUES (v_run, 1);
   PERFORM change_issue_status(v_issue, 'review');
-  INSERT INTO approval (issue_id, page_id, user_id, status)
-  SELECT v_issue, id, '00000000-0000-0000-0000-000000000001', 'approved' FROM page WHERE run_id = v_run;
-  PERFORM change_issue_status(v_issue, 'approved');
   SELECT * INTO p FROM v_issue_progress WHERE issue_id = v_issue;
-  ASSERT p.current_step = 'approved' AND p.progress_pct = 85, 'T33 approved';
+  ASSERT p.current_step = 'reviewing' AND p.progress_pct = 70, 'T33 reviewing';
 
   PERFORM change_issue_status(v_issue, 'printing');
   INSERT INTO print_job (issue_id, run_id, override_seq, status)
@@ -249,7 +238,7 @@ BEGIN
   PERFORM change_issue_status(v_issue, 'printed');
   INSERT INTO print_order (print_job_id, ordered_by, delivery_address_id, recipient_name, postal_code, address_line1, quantity, status)
   VALUES (v_job, '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000e1',
-          '김가상', '00000', '서울특별시 가상구 가상로 1', 3, 'shipped') RETURNING id INTO v_order;
+          '김가상', '00000', pgp_sym_encrypt('서울특별시 가상구 가상로 1', 'dev-only-change-me'), 3, 'shipped') RETURNING id INTO v_order;
   SELECT * INTO p FROM v_issue_progress WHERE issue_id = v_issue;
   ASSERT p.current_step = 'shipping' AND p.progress_pct = 95, 'T33 shipping';
 
@@ -458,7 +447,7 @@ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T55 전이 사전조건(S5): review/approved/printed 는 실체가 있어야 함
+\echo T55 전이 사전조건(S5): review/printed 는 실체가 있어야 함
 BEGIN;
 DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1';
@@ -485,23 +474,7 @@ BEGIN
   INSERT INTO page (run_id, page_no) VALUES (v_run, 1) RETURNING id INTO v_p1;
   INSERT INTO page (run_id, page_no) VALUES (v_run, 2) RETURNING id INTO v_p2;
   PERFORM change_issue_status(v, 'review');
-
-  BEGIN
-    PERFORM change_issue_status(v, 'approved');
-    RAISE EXCEPTION 'T55 failed: 승인 0건인데 approved';
-  EXCEPTION WHEN check_violation THEN NULL;
-  END;
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at) VALUES
-    (v, v_p1, u1, 'approved',          '2026-10-01 10:00+09'),
-    (v, v_p2, u1, 'changes_requested', '2026-10-01 10:05+09');
-  BEGIN
-    PERFORM change_issue_status(v, 'approved');
-    RAISE EXCEPTION 'T55 failed: 수정 요청이 남았는데 approved';
-  EXCEPTION WHEN check_violation THEN NULL;
-  END;
-  INSERT INTO approval (issue_id, page_id, user_id, status, created_at)
-  VALUES (v, v_p2, u1, 'approved', '2026-10-01 11:00+09');
-  PERFORM change_issue_status(v, 'approved');
+  -- 승인 절차가 없으므로 review 에서 바로 printing 으로 간다 (가족 미리보기 없음, 운영자 전환은 admin.sql/issues.sql T32 참고)
   PERFORM change_issue_status(v, 'printing');
 
   BEGIN
@@ -538,9 +511,6 @@ BEGIN
   INSERT INTO override (issue_id, run_id, target_type, target_id, op, author_id)
   VALUES (v, v_run, 'page', v_p1, '{"op":"move"}', u2);
   SELECT max(seq) INTO s FROM override WHERE run_id = v_run;
-  INSERT INTO approval (issue_id, page_id, user_id, status) VALUES (v, v_p1, u1, 'approved');
-  ASSERT (SELECT override_seq FROM approval WHERE page_id = v_p1) = s, 'T55b 승인이 최신 수정 번호를 기록';
-  PERFORM change_issue_status(v, 'approved');
   PERFORM change_issue_status(v, 'printing');
 
   INSERT INTO print_job (issue_id, run_id, override_seq, status)
@@ -614,5 +584,82 @@ BEGIN
   ASSERT e = 0 AND f = 1, format('T59 3회차 close=%s open=%s', e, f);
 
   ASSERT (SELECT count(*) FROM issue WHERE status = 'collecting' AND period_start < '2026-10-01') = 0, 'T59 마감 안 된 호가 남음';
+END $$;
+ROLLBACK;
+
+\echo T123 알림 발송 이력(NOTI-01~05, M-10): 종류는 세 가지뿐
+BEGIN;
+DO $$
+DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        k text;
+BEGIN
+  FOREACH k IN ARRAY ARRAY['question_published', 'deadline_reminder', 'published'] LOOP
+    INSERT INTO notification_log (user_id, issue_id, kind) VALUES (u1, a, k);
+  END LOOP;
+  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a) = 3, 'T123 세 건 저장';
+  BEGIN
+    INSERT INTO notification_log (user_id, issue_id, kind) VALUES (u1, a, 'spam');
+    RAISE EXCEPTION 'T123 failed: 알 수 없는 종류가 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
+\echo T124 신문 PDF 열람 기록(M-12, PUB-02): 발송 완료된 인쇄 작업을 가족이 열면 기록된다
+BEGIN;
+DO $$
+DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        v_run uuid; v_job uuid;
+BEGIN
+  INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
+  VALUES (a, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'done') RETURNING id INTO v_run;
+  INSERT INTO print_job (issue_id, run_id, override_seq, status) VALUES (a, v_run, 0, 'ready') RETURNING id INTO v_job;
+  INSERT INTO newsletter_view_log (print_job_id, user_id) VALUES (v_job, u1);
+  INSERT INTO newsletter_view_log (print_job_id, user_id) VALUES (v_job, u1);  -- 다시 봐도 되고(기록이 쌓인다)
+  ASSERT (SELECT count(*) FROM newsletter_view_log WHERE print_job_id = v_job) = 2, 'T124 열람마다 기록';
+END $$;
+ROLLBACK;
+
+\echo T125 알림 발송 큐(NOTI-01~03): 질문 공개/마감 리마인더/발송완료를 계산해 적재하고, 중복 적재는 안 함
+BEGIN;
+DO $$
+DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        q uuid; n int;
+BEGIN
+  -- NOTI-01: 질문 공개 - 그룹의 활동 중인 구성원 전원(2명)에게, 두 번 불러도 한 번만
+  INSERT INTO question (app_body, print_body, corner_name, kind, target)
+  VALUES ('질문', '질문(지면)', '코너', 'short_answer', 'us') RETURNING id INTO q;
+  INSERT INTO issue_question (issue_id, question_id, display_order) VALUES (a, q, 1);
+  SELECT enqueue_question_published_notifications(q) INTO n;
+  ASSERT n = 2, format('T125 질문 공개 알림 대상 2명이어야 함, got %s', n);
+  SELECT enqueue_question_published_notifications(q) INTO n;
+  ASSERT n = 0, 'T125 두 번째 호출은 중복이라 0건이어야 함';
+
+  -- NOTI-02: 마감 전 미참여자만 (u1/u2 는 시드 데이터에 이미 9월 글이 있어 제외, 새로 합류한 u5 만 대상)
+  INSERT INTO app_user (id, name) VALUES ('00000000-0000-0000-0000-000000000005', '막내');
+  INSERT INTO family_member (group_id, user_id) VALUES ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-000000000005');
+  UPDATE issue SET close_at = now() + interval '1 day' WHERE id = a;
+  SELECT enqueue_deadline_reminders() INTO n;
+  ASSERT n = 1, format('T125 미참여 리마인더는 1명(u5)이어야 함, got %s', n);
+  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a AND kind = 'deadline_reminder'
+           AND user_id = '00000000-0000-0000-0000-000000000005') = 1,
+         'T125 리마인더 대상이 u5 여야 함';
+  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a AND kind = 'deadline_reminder' AND user_id IN (u1, u2)) = 0,
+         'T125 이미 참여한 u1/u2 는 대상이 아니어야 함';
+
+  -- NOTI-03: 발송완료는 change_issue_status 가 자동으로 적재 (운영자가 printing -> printed)
+  PERFORM change_issue_status(a, 'closing');
+  INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
+  VALUES (a, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'done');
+  PERFORM change_issue_status(a, 'review');
+  PERFORM change_issue_status(a, 'printing');
+  INSERT INTO print_job (issue_id, run_id, override_seq, status)
+  SELECT a, id, 0, 'ready' FROM layout_run WHERE issue_id = a AND status = 'done';
+  PERFORM change_issue_status(a, 'printed');
+  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a AND kind = 'published') = 3,
+         'T125 발송완료 알림은 활동 중인 구성원 3명(u1,u2,u5)에게 자동 적재되어야 함';
 END $$;
 ROLLBACK;
