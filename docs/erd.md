@@ -29,7 +29,7 @@ flowchart LR
     issues -->|"1 FK"| admin
     feed -->|"3 FK"| identity
     feed -->|"3 FK"| groups
-    feed -->|"5 FK"| issues
+    feed -->|"4 FK"| issues
     feed -->|"1 FK"| admin
     layout -->|"3 FK"| templates
     layout -->|"1 FK"| issues
@@ -80,8 +80,7 @@ erDiagram
     "media" ||--o{ "media_rendition" : "media_id (cascade)"
     "print_job" ||--o{ "newsletter_view_log" : "print_job_id"
     "app_user" ||--o{ "newsletter_view_log" : "user_id"
-    "family_group" |o--o{ "notification_log" : "group_id"
-    "issue" |o--o{ "notification_log" : "issue_id"
+    "family_group" ||--o{ "notification_log" : "group_id"
     "issue" |o--o{ "notification_log" : "issue_id, group_id"
     "question" |o--o{ "notification_log" : "question_id"
     "app_user" ||--o{ "notification_log" : "user_id"
@@ -334,7 +333,7 @@ erDiagram
     "family_group" ||--o{ "family_member" : "group_id (cascade)"
     "app_user" ||--o{ "family_member" : "user_id"
     "family_group" ||--o{ "issue" : "group_id"
-    "family_group" |o--o{ "notification_log" : "group_id"
+    "family_group" ||--o{ "notification_log" : "group_id"
     "family_group" ||--o{ "post" : "group_id (cascade)"
     "family_member" ||--o{ "post" : "group_id, author_id"
     "delivery_address" |o--o{ "print_order" : "delivery_address_id (set null)"
@@ -433,7 +432,6 @@ erDiagram
     "issue" ||--o{ "issue_status_history" : "issue_id (cascade)"
     "operator" |o--o{ "issue_status_history" : "operator_id"
     "issue" ||--o{ "layout_run" : "issue_id (cascade)"
-    "issue" |o--o{ "notification_log" : "issue_id"
     "issue" |o--o{ "notification_log" : "issue_id, group_id"
     "issue" ||--o{ "override" : "issue_id (cascade)"
     "issue" ||--o{ "print_job" : "issue_id"
@@ -532,8 +530,7 @@ erDiagram
     "question" ||--o{ "issue_question" : "question_id"
     "post" ||--o{ "media" : "post_id, group_id (cascade)"
     "media" ||--o{ "media_rendition" : "media_id (cascade)"
-    "family_group" |o--o{ "notification_log" : "group_id"
-    "issue" |o--o{ "notification_log" : "issue_id"
+    "family_group" ||--o{ "notification_log" : "group_id"
     "issue" |o--o{ "notification_log" : "issue_id, group_id"
     "question" |o--o{ "notification_log" : "question_id"
     "app_user" ||--o{ "notification_log" : "user_id"

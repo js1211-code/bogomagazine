@@ -71,7 +71,7 @@
 
 | 방법 | 대상 |
 |---|---|
-| **복합 외래키** (부모에 `UNIQUE(id, group_id)` 등을 두고 자식이 둘을 함께 참조) | `media` ↔ `post`, `text_block` ↔ `post`/`issue`, `issue_media` ↔ `issue`/`media`(모두 같은 그룹), `post`/`family_invite`/`family_block`/`delivery_address` ↔ `family_member`(그 그룹의 구성원), `override`/`print_job` ↔ `layout_run`(같은 호), `preview` ↔ `page`(존재하는 페이지) |
+| **복합 외래키** (부모에 `UNIQUE(id, group_id)` 등을 두고 자식이 둘을 함께 참조) | `media` ↔ `post`, `text_block` ↔ `post`/`issue`, `issue_media` ↔ `issue`/`media`(모두 같은 그룹), `post`/`family_invite`/`family_block`/`delivery_address` ↔ `family_member`(그 그룹의 구성원), `override`/`print_job` ↔ `layout_run`(같은 호), `preview` ↔ `page`(존재하는 페이지), `notification_log` ↔ `issue`(issue_id가 있으면 같은 group_id, T117) — `issue_id`에는 이 복합 외래키 하나만 걸려있고 단독 FK는 없다(둘 다 두면 중복) |
 | **트리거** (활동 중인지, 선별되었는지 등 외래키로 못 쓰는 것) | `post`/`comment`(작성자가 활동 중인 구성원, 마감된 기간 거부), `media`(마감된 기간 거부), `family_invite`/`family_block`(방장만), `delivery_address`(활동 중인 구성원), `placement`(그 호에서 선별된 사진/그 호의 텍스트), `override`(가족이면 활동 중인 구성원, 운영자면 통과), `print_order`(같은 그룹의 배송지, 활동 중인 주문자), `comment`(답변(`post.question_id` 있음)에만 허용) |
 
 복합 외래키는 컬럼 중 하나가 NULL 이면 검사를 건너뛴다. 원본 글이 없는 텍스트(제목), 호 전체 승인이 그 경우다.

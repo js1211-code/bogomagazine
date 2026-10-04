@@ -15,7 +15,7 @@
 | 확인하고 싶은 것 | 명령 | 기대 결과 |
 |---|---|---|
 | 규칙이 코드대로 동작한다 | `./scripts/db.sh test` | `ALL DB TESTS PASSED` |
-| **테스트가 정말 문제를 잡는다** (테스트의 테스트) | `./scripts/verify-guards.sh` | 보호 장치 70개를 하나씩 빼고, 모두 해당 테스트가 실패해야 `모든 변이를 테스트가 잡았다` |
+| **테스트가 정말 문제를 잡는다** (테스트의 테스트) | `./scripts/verify-guards.sh` | 보호 장치 71개를 하나씩 빼고, 모두 해당 테스트가 실패해야 `모든 변이를 테스트가 잡았다` |
 | **함수/뷰 수준 모듈 의존**(외래키로 안 보이는 결합) | `./scripts/db.sh up && ./scripts/db.sh migrate` 후 `PYTHONUTF8=1 python3 scripts/analysis/fn-deps.py` | 모듈 간 의존 목록. `architecture.md`의 "알려진 예외" 표와 일치해야 하고, 표에 없는 줄이 나오면 문서화하거나 함수를 옮긴다 |
 | 글 올리기/마감, 워커 중복 수령이 **동시에 움직여도** 안전하다 | `./scripts/repro/concurrency.sh` | 글 올리기는 마감이 끝날 때까지 기다렸다 거부되고, 워커 둘은 서로 막히지 않고 다른 호를 받음. (초대 링크는 사용 횟수 제한이 없어져 경쟁 조건 자체가 없음) |
 | `CREATE INDEX CONCURRENTLY`가 Flyway 기본 설정에서 **멈춘다** | `./scripts/repro/flyway-concurrent-index.sh` | 기본값은 30초 안에 끝나지 않고(`timeout`), 우리 설정은 정상 적용 |
@@ -43,6 +43,7 @@
 | 방장이 아닌 사람이 초대/내보내기 | T21, T24 (`db/tests/groups.sql`) |
 | 다른 그룹의 사진/배송지가 섞임 | T100~T102, T107, T109 (`db/tests/integrity.sql`) |
 | 나간 구성원이 글/수정/주문 | T53, T103, T105, T109 |
+| `notification_log.issue_id`에 단독 FK와 복합 FK가 중복(1004 반영 때 복합 FK로 바꾸며 예전 단독 FK 제거를 잊음, 리뷰에서 발견) | T117 (`integrity.sql`) |
 
 `verify-guards.sh`는 이 테스트들이 "통과만 하는 가짜"가 아님을 확인한다.
 

@@ -591,15 +591,16 @@ ROLLBACK;
 BEGIN;
 DO $$
 DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         k text;
 BEGIN
   FOREACH k IN ARRAY ARRAY['question_published', 'deadline_reminder', 'published', 'owner_changed'] LOOP
-    INSERT INTO notification_log (user_id, issue_id, kind) VALUES (u1, a, k);
+    INSERT INTO notification_log (user_id, group_id, issue_id, kind) VALUES (u1, g, a, k);
   END LOOP;
   ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a) = 4, 'T123 네 건 저장';
   BEGIN
-    INSERT INTO notification_log (user_id, issue_id, kind) VALUES (u1, a, 'spam');
+    INSERT INTO notification_log (user_id, group_id, issue_id, kind) VALUES (u1, g, a, 'spam');
     RAISE EXCEPTION 'T123 failed: 알 수 없는 종류가 허용됨';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
@@ -670,11 +671,12 @@ ROLLBACK;
 BEGIN;
 DO $$
 DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         n int;
 BEGIN
-  INSERT INTO notification_log (user_id, issue_id, kind, sent_at) VALUES (u1, a, 'published', now() - interval '61 days');
-  INSERT INTO notification_log (user_id, issue_id, kind, sent_at) VALUES (u1, a, 'deadline_reminder', now() - interval '59 days');
+  INSERT INTO notification_log (user_id, group_id, issue_id, kind, sent_at) VALUES (u1, g, a, 'published', now() - interval '61 days');
+  INSERT INTO notification_log (user_id, group_id, issue_id, kind, sent_at) VALUES (u1, g, a, 'deadline_reminder', now() - interval '59 days');
   SELECT delete_old_notifications() INTO n;
   ASSERT n = 1, format('T125b 60일 지난 알림 1건이 지워져야 함, got %s', n);
   ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a AND kind = 'deadline_reminder') = 1,

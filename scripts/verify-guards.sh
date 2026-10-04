@@ -113,6 +113,7 @@ check "발송완료 자동 알림 무력화(NOTI-03)" "FN|change_issue_status(uu
 # --- 참조 정합성(db/tests/integrity.sql): 복합 외래키와 트리거를 하나씩 약화/제거 ---
 check "사진-글 복합 FK 제거"          "ALTER TABLE media DROP CONSTRAINT media_post_id_group_id_fkey, ADD FOREIGN KEY (post_id) REFERENCES post(id) ON DELETE CASCADE" db/tests/integrity.sql "T100 failed"
 check "텍스트-글 복합 FK 제거"        "ALTER TABLE text_block DROP CONSTRAINT text_block_post_id_group_id_fkey, ADD FOREIGN KEY (post_id) REFERENCES post(id) ON DELETE SET NULL" db/tests/integrity.sql "T101 failed"
+check "알림-호 복합 FK 제거"          "ALTER TABLE notification_log DROP CONSTRAINT notification_log_issue_id_group_id_fkey" db/tests/integrity.sql "T117 failed"
 check "텍스트-호 복합 FK 제거"        "ALTER TABLE text_block DROP CONSTRAINT text_block_issue_id_group_id_fkey, ADD FOREIGN KEY (issue_id) REFERENCES issue(id) ON DELETE CASCADE" db/tests/integrity.sql "T101 failed"
 check "호별 선별-사진 복합 FK 제거"   "ALTER TABLE issue_media DROP CONSTRAINT issue_media_media_id_group_id_fkey, ADD FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE" db/tests/integrity.sql "T102 failed"
 check "호별 선별-호 복합 FK 제거"     "ALTER TABLE issue_media DROP CONSTRAINT issue_media_issue_id_group_id_fkey, ADD FOREIGN KEY (issue_id) REFERENCES issue(id) ON DELETE CASCADE" db/tests/integrity.sql "T102 failed"

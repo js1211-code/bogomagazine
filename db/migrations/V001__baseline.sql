@@ -341,13 +341,13 @@ CREATE TABLE issue_question (
 CREATE TABLE notification_log (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id     uuid NOT NULL REFERENCES app_user(id),
-    group_id    uuid REFERENCES family_group(id),   -- 알림 목록에서 가족 이름과 함께 묶어 보여주려고 직접 둔다
-    issue_id    uuid REFERENCES issue(id),
+    group_id    uuid NOT NULL REFERENCES family_group(id),  -- 모든 알림은 가족 하나에 속한다(목록에서 가족 이름과 함께 묶어 보여줌)
+    issue_id    uuid,            -- FK는 아래 복합 외래키 하나로만 건다(issue_id 단독 FK를 따로 두지 않음 - 중복)
     question_id uuid REFERENCES question(id),  -- kind='question_published' 일 때만 채움 (호당 질문 2개라 issue_id 만으론 중복 방지가 안 됨)
     kind        text NOT NULL CHECK (kind IN ('question_published', 'deadline_reminder', 'published', 'owner_changed')),
     read_at     timestamptz,     -- 알림 목록 읽음 표시(NOTI-06). NULL = 안 읽음
     sent_at     timestamptz NOT NULL DEFAULT now(),
-    -- issue_id 가 있으면 그 호와 같은 그룹이어야 한다 (issue_id가 없는 owner_changed 등은 검사 생략)
+    -- issue_id 가 있으면 그 호가 반드시 이 group_id 소속이어야 한다. group_id는 NOT NULL이라 issue_id가 NULL일 때만(owner_changed 등) 검사를 건너뛴다
     FOREIGN KEY (issue_id, group_id) REFERENCES issue (id, group_id)
 );
 -- 중복 발송 방지: question_published는 (user, question) 단위, 나머지는 (user, issue) 단위로 한 번만
