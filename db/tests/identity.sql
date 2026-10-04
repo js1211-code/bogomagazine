@@ -62,6 +62,8 @@ BEGIN
   PERFORM * FROM anonymize_user(u1);
   ASSERT (SELECT name = '탈퇴한 사용자' FROM app_user WHERE id = u1), 'T81 방장 탈퇴 시 익명화되어야 함';
   ASSERT (SELECT owner_id = u2 FROM family_group WHERE id = g), 'T81 방장이 가장 먼저 합류한 구성원(u2)에게 자동 이전되어야 함';
+  ASSERT EXISTS (SELECT 1 FROM notification_log WHERE user_id = u2 AND group_id = g AND kind = 'owner_changed'),
+         'T81 새 방장에게 알림 목록(NOTI-06)에 owner_changed 가 남아야 함';
 
   -- 혼자뿐인 그룹의 방장은 거부한다(마지막 구성원 탈퇴 정책은 아직 결정 전, TODO.md)
   INSERT INTO app_user (id, name) VALUES (solo, '혼자');

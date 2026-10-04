@@ -123,8 +123,8 @@ CREATE OR REPLACE FUNCTION enqueue_question_published_notifications(p_question u
 LANGUAGE plpgsql AS $$
 DECLARE v_count int;
 BEGIN
-    INSERT INTO notification_log (user_id, issue_id, question_id, kind)
-    SELECT fm.user_id, iq.issue_id, p_question, 'question_published'
+    INSERT INTO notification_log (user_id, group_id, issue_id, question_id, kind)
+    SELECT fm.user_id, i.group_id, iq.issue_id, p_question, 'question_published'
       FROM issue_question iq
       JOIN issue i ON i.id = iq.issue_id
       JOIN family_member fm ON fm.group_id = i.group_id AND fm.left_at IS NULL
@@ -140,8 +140,8 @@ CREATE OR REPLACE FUNCTION enqueue_deadline_reminders(p_now timestamptz DEFAULT 
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE v_count int;
 BEGIN
-    INSERT INTO notification_log (user_id, issue_id, kind)
-    SELECT fm.user_id, i.id, 'deadline_reminder'
+    INSERT INTO notification_log (user_id, group_id, issue_id, kind)
+    SELECT fm.user_id, i.group_id, i.id, 'deadline_reminder'
       FROM issue i
       JOIN family_group g ON g.id = i.group_id
       JOIN family_member fm ON fm.group_id = i.group_id AND fm.left_at IS NULL
@@ -162,10 +162,21 @@ LANGUAGE plpgsql AS $$
 DECLARE v_count int; v_group uuid;
 BEGIN
     SELECT group_id INTO v_group FROM issue WHERE id = p_issue;
-    INSERT INTO notification_log (user_id, issue_id, kind)
-    SELECT fm.user_id, p_issue, 'published'
+    INSERT INTO notification_log (user_id, group_id, issue_id, kind)
+    SELECT fm.user_id, v_group, p_issue, 'published'
       FROM family_member fm WHERE fm.group_id = v_group AND fm.left_at IS NULL
     ON CONFLICT (user_id, issue_id) WHERE kind = 'published' DO NOTHING;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END $$;
+
+-- 알림 목록 보관기한(NOTI-06, O-33 결정: 60일). 스케줄러가 주기적으로(예: 하루 한 번) 호출한다.
+-- enqueue_* 함수들처럼 아직 어디서도 자동으로 호출되지 않는다 - 발송 워커가 붙을 때 같이 스케줄한다(TODO.md).
+CREATE OR REPLACE FUNCTION delete_old_notifications(p_now timestamptz DEFAULT now()) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE v_count int;
+BEGIN
+    DELETE FROM notification_log WHERE sent_at < p_now - interval '60 days';
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
 END $$;

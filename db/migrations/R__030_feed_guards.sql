@@ -10,20 +10,27 @@
 --   => 선별이 끝난 뒤에 들어온 글/사진이 조용히 누락되는 일이 없다.
 -- 기간에 해당하는 호가 아직 만들어지지 않았으면(이번 달 배치가 돌기 전) 허용한다.
 -- 마감 시각(close_at) 자체는 DB 가 강제하지 않는다. 배치가 호를 닫기 전까지는 받는다.
-CREATE OR REPLACE FUNCTION assert_period_open(p_group uuid, p_ts timestamptz) RETURNS void
+-- 사진 업로드 유예(POST-07, 1004 결정): p_upload_started_at(사진의 initiated_at)이 마감 전이면
+-- 마감 후 14분까지는 받는다(23:59 전 시작 -> 다음날 00:14까지, close_at=00:00 기준 14분). 사진이 없는 글/답변/댓글은 유예가 없다(호출자가 생략하면 하드컷).
+CREATE OR REPLACE FUNCTION assert_period_open(p_group uuid, p_ts timestamptz, p_upload_started_at timestamptz DEFAULT NULL) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_status text;
+    v_status   text;
+    v_close_at timestamptz;
 BEGIN
-    SELECT i.status INTO v_status
+    SELECT i.status, i.close_at INTO v_status, v_close_at
       FROM issue i JOIN family_group g ON g.id = i.group_id
      WHERE i.group_id = p_group
        AND (p_ts AT TIME ZONE g.timezone)::date BETWEEN i.period_start AND i.period_end
        FOR SHARE OF i;
-    IF FOUND AND v_status <> 'collecting' THEN
-        RAISE EXCEPTION 'the issue for this period is not collecting (status=%): posting not allowed', v_status
-            USING ERRCODE = 'check_violation';
+    IF NOT FOUND OR v_status = 'collecting' THEN
+        RETURN;
     END IF;
+    IF p_upload_started_at IS NOT NULL AND p_upload_started_at <= v_close_at AND now() <= v_close_at + interval '14 minutes' THEN
+        RETURN;
+    END IF;
+    RAISE EXCEPTION 'the issue for this period is not collecting (status=%): posting not allowed', v_status
+        USING ERRCODE = 'check_violation';
 END $$;
 
 -- 금칙어(SAFE-03): 등록 시점에 본문에 포함되어 있으면 거부. 목록은 팀이 직접 관리(banned_word)
@@ -74,7 +81,7 @@ DECLARE
 BEGIN
     SELECT group_id, posted_at INTO v_group, v_ts FROM post WHERE id = NEW.post_id;
     IF FOUND THEN
-        PERFORM assert_period_open(v_group, v_ts);
+        PERFORM assert_period_open(v_group, v_ts, NEW.initiated_at);
     END IF;
     RETURN NEW;
 END $$;

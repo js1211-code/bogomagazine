@@ -191,7 +191,7 @@ ALTER TABLE family_group
 -- 카톡 공유 링크는 유효기간·사용 횟수 제한·취소가 없다(FAM-05, V-23) — 한 번 만들면 계속 쓰는 영구 링크.
 CREATE TABLE family_invite (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    group_id    uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
+    group_id    uuid NOT NULL UNIQUE REFERENCES family_group(id) ON DELETE CASCADE,  -- 가족마다 고정 코드 1개(FAM-05, 1004 결정)
     created_by  uuid NOT NULL,              -- 방장 (R__005 트리거가 검사)
     token_hash  text NOT NULL UNIQUE CHECK (length(token_hash) = 64),   -- sha256 hex
     created_at  timestamptz NOT NULL DEFAULT now(),
@@ -218,7 +218,7 @@ CREATE TABLE delivery_address (
     recipient_name  text NOT NULL,
     recipient_phone bytea,                  -- pgcrypto pgp_sym_encrypt() 로 암호화. 키는 앱이 관리(DELIVERY_PII_KEY), DB 에는 없음
     -- 수신자(조부모) 정보 (RCV-01): 호칭 결정에 성별이 필요하다(기술 필수). 부부 수신이면 성별을 안 쓰고
-    -- 호칭 대응표의 "부부 수신" 칸을 쓴다. 사진 필수 여부는 미결(O-16)이라 NULL 허용
+    -- 호칭 대응표의 "부부 수신" 칸을 쓴다. 사진은 선택 입력(O-16 결정, 1004) - NULL 허용은 그대로 둔다
     recipient_type  text NOT NULL DEFAULT 'single' CHECK (recipient_type IN ('single', 'couple')),
     recipient_gender text CHECK (recipient_gender IN ('female', 'male')),
     recipient_photo_key text,
@@ -336,14 +336,19 @@ CREATE TABLE issue_question (
     UNIQUE (issue_id, display_order)
 );
 
--- 알림 발송 이력(NOTI-01~05, M-10). 질문 공개/마감 리마인더/발송완료 푸시를 보낼 때마다 한 행
+-- 알림 발송 이력(NOTI-01~06, M-10). 질문 공개/마감 리마인더/발송완료/방장 변경 푸시를 보낼 때마다 한 행.
+-- 알림 목록(NOTI-06, 1004 결정): 종 아이콘으로 지난 알림을 가족별로 묶어 보여주고, read_at 으로 읽음 표시. 60일 보관(O-33) 후 자동 삭제(delete_old_notifications())
 CREATE TABLE notification_log (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id     uuid NOT NULL REFERENCES app_user(id),
+    group_id    uuid REFERENCES family_group(id),   -- 알림 목록에서 가족 이름과 함께 묶어 보여주려고 직접 둔다
     issue_id    uuid REFERENCES issue(id),
     question_id uuid REFERENCES question(id),  -- kind='question_published' 일 때만 채움 (호당 질문 2개라 issue_id 만으론 중복 방지가 안 됨)
-    kind        text NOT NULL CHECK (kind IN ('question_published', 'deadline_reminder', 'published')),
-    sent_at     timestamptz NOT NULL DEFAULT now()
+    kind        text NOT NULL CHECK (kind IN ('question_published', 'deadline_reminder', 'published', 'owner_changed')),
+    read_at     timestamptz,     -- 알림 목록 읽음 표시(NOTI-06). NULL = 안 읽음
+    sent_at     timestamptz NOT NULL DEFAULT now(),
+    -- issue_id 가 있으면 그 호와 같은 그룹이어야 한다 (issue_id가 없는 owner_changed 등은 검사 생략)
+    FOREIGN KEY (issue_id, group_id) REFERENCES issue (id, group_id)
 );
 -- 중복 발송 방지: question_published는 (user, question) 단위, 나머지는 (user, issue) 단위로 한 번만
 CREATE UNIQUE INDEX ux_notification_log_question  ON notification_log (user_id, question_id) WHERE kind = 'question_published';
@@ -380,6 +385,7 @@ CREATE TABLE media (
     height            int  NOT NULL,
     exif              jsonb,
     taken_at          timestamptz,
+    initiated_at      timestamptz NOT NULL DEFAULT now(),  -- 업로드 시작 시각(POST-07 마감 유예, 1004 결정). 클라이언트가 보낸다
     color_profile     text,
     -- 이미지 분석 결과
     focal_point       jsonb,                -- {x,y} 0..1
@@ -664,6 +670,9 @@ CREATE INDEX ix_comment_post         ON comment (post_id);
 CREATE INDEX ix_post_question        ON post (question_id) WHERE question_id IS NOT NULL;
 CREATE INDEX ix_report_status        ON report (status) WHERE status = 'pending';
 CREATE INDEX ix_notification_log_issue ON notification_log (issue_id);
+CREATE INDEX ix_notification_log_group ON notification_log (group_id);
+-- 알림 목록(NOTI-06) 조회 경로: 사용자 기준 최신순
+CREATE INDEX ix_notification_log_user  ON notification_log (user_id, sent_at DESC);
 CREATE INDEX ix_newsletter_view_log_job ON newsletter_view_log (print_job_id);
 -- 진행 뷰가 페이지/호/인쇄 단위로 "가장 최근 1건"을 찾는 경로
 CREATE INDEX ix_override_issue       ON override (issue_id);
@@ -687,7 +696,7 @@ COMMENT ON TABLE operator                IS 'module:admin | 운영자 계정(Adm
 COMMENT ON TABLE operator_alert_log      IS 'module:admin | 조판 실패(3회)·신고 접수 시 팀 메일 발송 대상(ADM-08)';
 COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방장(owner_id), 신문 제호(newsletter_title, FAM-03)와 마감 정책(마감일, 타임존, 미달 시 자동 미발행)';
 COMMENT ON TABLE family_member           IS 'module:groups | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다';
-COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시). 영구 링크, 방장만 만든다(FAM-05)';
+COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시). 영구 링크, 가족마다 1개, 방장만 만든다(FAM-05, 1004 결정)';
 COMMENT ON TABLE family_block            IS 'module:groups | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가';
 COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지 + 수신자(성별·사진·1인/부부) 정보. 주문에는 복사본을 남긴다';
 COMMENT ON TABLE delivery_address_access_log IS 'module:groups | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01)';
@@ -698,14 +707,14 @@ COMMENT ON TABLE font                    IS 'module:templates | 폰트 메타데
 COMMENT ON TABLE issue                   IS 'module:issues | 월간 호. 그 달의 게시물을 모아 만든 결과물. 상태는 change_issue_status()로만 바꾼다';
 COMMENT ON TABLE issue_status_history    IS 'module:issues | 호 상태 변경 이력. changed_by(가족) 또는 operator_id(운영자) 중 하나만 채워짐, 둘 다 NULL이면 배치가 자동 변경';
 COMMENT ON TABLE issue_status_transition IS 'module:issues | 허용된 상태 전이 표';
-COMMENT ON TABLE notification_log        IS 'module:feed | 알림 발송 이력(질문 공개/마감 리마인더/발송완료, NOTI-01~05, M-10). question 을 참조해서 issues 가 아니라 feed 소속';
+COMMENT ON TABLE notification_log        IS 'module:feed | 알림 발송 이력 + 읽음 표시(NOTI-01~06, M-10). 60일 보관 후 자동 삭제(O-33). question 을 참조해서 issues 가 아니라 feed 소속';
 COMMENT ON TABLE banned_word              IS 'module:feed | 금칙어 목록(SAFE-03). 게시물·답변·댓글 등록을 막는 기준';
 COMMENT ON TABLE question                IS 'module:feed | 질문카드 풀. MVP는 팀이 작성한 고정 풀(QST-02)';
 COMMENT ON TABLE issue_question          IS 'module:feed | 호에 공개된 질문(호당 2개, display_order). 공개 시각은 NOTI-01 이 참조';
 COMMENT ON TABLE post                    IS 'module:feed | 피드 게시물(글) 또는 질문 답변(question_id). 호와 독립이고 posted_at 으로 어느 호에 실릴지 정해진다';
 COMMENT ON TABLE comment                 IS 'module:feed | 질문 답변 댓글(QST-06), 1뎁스';
 COMMENT ON TABLE report                  IS 'module:feed | 콘텐츠 신고(SAFE-01). 운영자가 확인·조치(ADM-05)';
-COMMENT ON TABLE media                   IS 'module:feed | 게시물의 사진. 이미지 분석 결과와 사용자의 의도(꼭 넣기/빼기)';
+COMMENT ON TABLE media                   IS 'module:feed | 게시물의 사진. 이미지 분석 결과와 사용자의 의도(꼭 넣기/빼기). initiated_at(업로드 시작)은 마감 유예(POST-07)에 쓴다';
 COMMENT ON TABLE media_rendition         IS 'module:feed | 사진의 파생본(썸네일/미리보기/인쇄용)';
 COMMENT ON TABLE issue_media             IS 'module:feed | 호별 사진 선별 결과(후보/선택/제외와 점수). 마감할 때 만들어진다';
 COMMENT ON TABLE text_block              IS 'module:feed | 호에 들어가는 글 조각(제목/캡션/인용/본문)';

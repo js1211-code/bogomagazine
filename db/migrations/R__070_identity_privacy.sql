@@ -13,6 +13,7 @@
 --   * page_lock      : 제거
 --   * post/media     : 모집 중(status='collecting')인 호의 기간에 속한 글은 지운다(사진/댓글은 CASCADE).
 --     마감 이후(선별·조판이 이미 진행됨)인 호의 글은 그대로 유지 - "마감 후 탈퇴는 이번 호에 실려서 발송"(ACC-05)
+--   * notification_log  : 방장이 자동 이전되면 새 방장에게 'owner_changed' 알림을 남긴다(FAM-11, NOTI-06)
 --   * 호출자에게 돌려줌 : 외부 시크릿 저장소에서 폐기해야 할 토큰 참조 목록 (DB 밖이라 DB 가 지울 수 없다)
 -- 이 함수가 하지 않는 일 (정책 결정이 필요 — TODO.md)
 --   * 이미 인쇄/발행된 호의 내용 변경
@@ -44,6 +45,8 @@ BEGIN
                     USING ERRCODE = 'check_violation';
             END IF;
             UPDATE family_group SET owner_id = v_successor WHERE id = v_group;
+            -- 새 방장에게 알림 목록(NOTI-06)에 남긴다. 푸시는 안 간다(FAM-11)
+            INSERT INTO notification_log (user_id, group_id, kind) VALUES (v_successor, v_group, 'owner_changed');
         END LOOP;
     END;
 

@@ -56,12 +56,13 @@ DO $$ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T21 초대: 방장만 만들 수 있다 (일반 구성원/외부인 거부)
+\echo T21 초대: 방장만 만들 수 있다 (일반 구성원/외부인 거부), 가족마다 고정 코드 1개(FAM-05, 1004 결정)
 BEGIN;
 DO $$
 DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v1 family_invite%ROWTYPE; v2 family_invite%ROWTYPE;
 BEGIN
   INSERT INTO family_invite (group_id, created_by, token_hash)
   VALUES (g, u1, repeat('a', 64));
@@ -77,6 +78,21 @@ BEGIN
     RAISE EXCEPTION 'T21 failed: 짧은 해시 허용';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
+
+  -- 같은 그룹에 방장이 직접 두 번째 링크를 만들어도 거부된다 (가족마다 1개)
+  BEGIN
+    INSERT INTO family_invite (group_id, created_by, token_hash)
+    VALUES (g, u1, repeat('c', 64));
+    RAISE EXCEPTION 'T21 failed: 같은 그룹에 두 번째 초대 링크가 만들어짐';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+
+  -- get_or_create_family_invite()는 이미 있으면 그걸 그대로 돌려주고, 없으면 만든다
+  SELECT * INTO v1 FROM get_or_create_family_invite(g, u1, repeat('d', 64));
+  ASSERT v1.token_hash = repeat('a', 64), 'T21 이미 있는 링크를 그대로 돌려줘야 함';
+  SELECT * INTO v1 FROM get_or_create_family_invite(g, u1, repeat('d', 64));
+  ASSERT v1.token_hash = repeat('a', 64), 'T21 두 번째 호출도 같은 링크여야 함';
+  ASSERT (SELECT count(*) FROM family_invite WHERE group_id = g) = 1, 'T21 get_or_create 호출로 링크가 늘어나면 안 됨';
 END $$;
 ROLLBACK;
 

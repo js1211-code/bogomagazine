@@ -587,17 +587,17 @@ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T123 알림 발송 이력(NOTI-01~05, M-10): 종류는 세 가지뿐
+\echo T123 알림 발송 이력(NOTI-01~06, M-10): 종류는 네 가지뿐
 BEGIN;
 DO $$
 DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         k text;
 BEGIN
-  FOREACH k IN ARRAY ARRAY['question_published', 'deadline_reminder', 'published'] LOOP
+  FOREACH k IN ARRAY ARRAY['question_published', 'deadline_reminder', 'published', 'owner_changed'] LOOP
     INSERT INTO notification_log (user_id, issue_id, kind) VALUES (u1, a, k);
   END LOOP;
-  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a) = 3, 'T123 세 건 저장';
+  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a) = 4, 'T123 네 건 저장';
   BEGIN
     INSERT INTO notification_log (user_id, issue_id, kind) VALUES (u1, a, 'spam');
     RAISE EXCEPTION 'T123 failed: 알 수 없는 종류가 허용됨';
@@ -637,6 +637,8 @@ BEGIN
   ASSERT n = 2, format('T125 질문 공개 알림 대상 2명이어야 함, got %s', n);
   SELECT enqueue_question_published_notifications(q) INTO n;
   ASSERT n = 0, 'T125 두 번째 호출은 중복이라 0건이어야 함';
+  ASSERT (SELECT group_id FROM notification_log WHERE issue_id = a AND kind = 'question_published' LIMIT 1)
+         = '00000000-0000-0000-0000-0000000000d1', 'T125 알림에 그룹 id가 채워져야 함(NOTI-06)';
 
   -- NOTI-02: 마감 전 미참여자만 (u1/u2 는 시드 데이터에 이미 9월 글이 있어 제외, 새로 합류한 u5 만 대상)
   INSERT INTO app_user (id, name) VALUES ('00000000-0000-0000-0000-000000000005', '막내');
@@ -661,5 +663,21 @@ BEGIN
   PERFORM change_issue_status(a, 'printed');
   ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a AND kind = 'published') = 3,
          'T125 발송완료 알림은 활동 중인 구성원 3명(u1,u2,u5)에게 자동 적재되어야 함';
+END $$;
+ROLLBACK;
+
+\echo T125b 알림 목록 보관기한(NOTI-06, O-33 결정 60일): 60일 지난 알림은 삭제되고 최근 것은 남는다
+BEGIN;
+DO $$
+DECLARE a constant uuid := '00000000-0000-0000-0000-0000000000c1';
+        u1 constant uuid := '00000000-0000-0000-0000-000000000001';
+        n int;
+BEGIN
+  INSERT INTO notification_log (user_id, issue_id, kind, sent_at) VALUES (u1, a, 'published', now() - interval '61 days');
+  INSERT INTO notification_log (user_id, issue_id, kind, sent_at) VALUES (u1, a, 'deadline_reminder', now() - interval '59 days');
+  SELECT delete_old_notifications() INTO n;
+  ASSERT n = 1, format('T125b 60일 지난 알림 1건이 지워져야 함, got %s', n);
+  ASSERT (SELECT count(*) FROM notification_log WHERE issue_id = a AND kind = 'deadline_reminder') = 1,
+         'T125b 60일 안 된 알림은 남아야 함';
 END $$;
 ROLLBACK;
