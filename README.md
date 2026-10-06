@@ -29,7 +29,7 @@
 │  ├─ workflow.md        작업 흐름, 브랜치/커밋 규칙
 │  ├─ verification.md    검증/재현 방법 (직접 돌려 볼 수 있는 것만)
 │  ├─ algorithm-io.md    자동 조판 알고리즘 입출력 계약
-│  ├─ openapi.yaml       API 명세 (OpenAPI 3.0.3). 조판 엔진(조판 생성/워커/미리보기)은 제외 — 팀원 문서와 합칠 예정
+│  ├─ openapi.yaml       API 명세 최종본 (OpenAPI 3.0.3). 조판 결과 처리(검수/재조판/발송)는 포함, 조판 워커·엔진 자체(HTTP 아님)는 제외
 │  └─ adr/               결정 기록 (모듈러 모놀리스, DB 마이그레이션)
 ├─ scripts/              db.sh(개발/테스트/ERD/성능), check-migrations.sh, secret-scan.sh, check.sh, setup.sh,
 │                        verify-guards.sh(변이 검사), repro/(재현 스크립트), analysis/(함수 수준 의존 분석),

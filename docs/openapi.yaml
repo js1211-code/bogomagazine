@@ -5,14 +5,12 @@ info:
   description: |
     가족이 올린 글/사진을 모아 월간 신문으로 만들어 인쇄·배송하는 서비스의 API.
 
-    **이 문서는 조판 기술 엔진(자동 조판 생성·조판 워커·미리보기 렌더링)을 제외한 나머지 전부를 다룬다.**
-    아래는 이 문서에 **없는** 것들이다 (다른 팀원 문서 참고):
-    - 조판 생성/재생성 트리거, 조판 워커 claim/heartbeat/complete API
-    - `layout_run`/`page`/`placement`/`preview` 리소스 자체의 CRUD
-    - 조판 알고리즘의 입출력 (`docs/algorithm-io.md` 참고)
-
-    운영자(조판 검수, override)·인쇄/배송(print_job, print_order)·알림 등은 **이 문서에 포함**된다 —
-    조판 "엔진"이 아니라 그 결과를 다루는 운영/후처리 단계이기 때문이다.
+    **최종본 — 내 쪽 API(가족/운영 전반)와 조아영님의 조판 API 설계(2026-10-06,
+    "조판 API 설계 트레이드오프와 선정 이유")를 합쳤다.** 조판 워커(`claim_compose_job` 등
+    DB 함수 기반 임대 큐)와 조판 엔진 `compose()` 자체는 HTTP API가 아니라서 이 문서에 없다 —
+    대신 운영자가 그 결과를 다루는 엔드포인트(조판 검수·재조판·발송)는 전부 포함한다.
+    조판 내부 상태(phase: COLLECTING/CLOSED/COMPOSING/COMPOSE_FAILED/IN_REVIEW/SENT)는
+    DB의 `issue.status`보다 세분화되어 있고, 서버가 표시 상태(displayState)로 매핑해 내려준다.
 
     각 엔드포인트 설명에는 가능하면 기능명세서 코드(`FAM-01` 같은 것)를 같이 적었다. DB 설계는
     [architecture.md](architecture.md)/[erd.md](erd.md) 참고. 스키마와 이 문서가 다르면 **스키마가 기준**이다.
@@ -69,10 +67,8 @@ tags:
     description: 운영자 로그인
   - name: AdminIssues
     description: 운영자용 호 운영 (ADM-02)
-  - name: AdminReview
-    description: 조판 검수/수정 로그 (ADM-03) — 조판 "생성"은 제외, 결과에 대한 조치만
-  - name: AdminPrinting
-    description: 인쇄 작업/배송 주문 (ADM-04)
+  - name: AdminCompose
+    description: "조판 검수/재조판/발송 완료/인쇄 PDF·배송지 (ADM-02~04, 조아영 조판 API 설계 반영) — 조판 엔진 자체는 제외, 결과에 대한 조치만"
   - name: AdminReports
     description: 신고·차단 처리 (ADM-05)
   - name: AdminMetrics
@@ -446,7 +442,7 @@ paths:
     delete:
       tags: [Members]
       summary: 구성원 내보내기 (FAM-09, 방장만)
-      description: 내보낸 계정은 자동으로 차단 목록에 등록된다. 방장은 내보낼 수 없다.
+      description: 내보낸 계정은 자동으로 '내보낸 구성원' 목록에 등록된다. 방장은 내보낼 수 없다.
       parameters:
         - $ref: "#/components/parameters/GroupId"
         - name: userId
@@ -462,10 +458,13 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /groups/{groupId}/blocks:
+  /groups/{groupId}/removed-members:
     get:
       tags: [Members]
-      summary: 차단 목록 (FAM-09/10, 방장만)
+      summary: 내보낸 구성원 목록 (FAM-09/10, 방장만)
+      description: |
+        개인 차단(`/me/blocks`, SAFE-02)과는 다른 기능이다 — 이름이 "차단"으로 겹치지 않도록
+        FAM-09 용어("내보낸 구성원")를 그대로 경로에 썼다(조아영 조판 API 설계 제안 반영).
       parameters: [{ $ref: "#/components/parameters/GroupId" }]
       responses:
         "200":
@@ -479,11 +478,11 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/FamilyBlock" }
 
-  /groups/{groupId}/blocks/{userId}/unblock:
+  /groups/{groupId}/removed-members/{userId}/allow-rejoin:
     post:
       tags: [Members]
-      summary: 차단 해제 (FAM-10, 방장만)
-      description: 해제하면 같은 초대 링크로 다시 합류 가능.
+      summary: 재합류 허용 (FAM-10, 방장만)
+      description: 허용하면 같은 초대 링크로 다시 합류 가능.
       parameters:
         - $ref: "#/components/parameters/GroupId"
         - name: userId
@@ -491,28 +490,22 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
-        "204": { description: 해제됨 }
+        "204": { description: 재합류 허용됨 }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /groups/{groupId}/invites:
-    post:
+  /groups/{groupId}/invite-link:
+    get:
       tags: [Invites]
-      summary: 초대 링크 생성 (FAM-05, 방장만)
+      summary: 초대 링크 조회 (FAM-05, 구성원 누구나)
       description: |
-        유효기간·사용 횟수 제한·취소가 없는 영구 링크다. **가족마다 고정 코드 1개**(1004 결정) —
-        이미 있으면 새로 만들지 않고 그 링크를 그대로 돌려준다(200). 처음 만들 때만 201.
+        유효기간·사용 횟수 제한·취소가 없는 영구 링크다. **가족마다 고정 코드 1개**(1005 결정).
+        없으면 서버가 그 자리에서 만들어(방장 명의로) 돌려준다 — "구성원 누구나 공유 가능"(FAM-08)
+        이라 생성 동작을 방장 전용 POST로 따로 둘 필요가 없다(조아영 조판 API 설계 제안 반영,
+        이름이 POST .../invites에서 GET .../invite-link로 바뀜).
       parameters: [{ $ref: "#/components/parameters/GroupId" }]
       responses:
         "200":
-          description: 이미 있던 링크를 그대로 반환
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  shareUrl: { type: string, format: uri }
-        "201":
-          description: 새로 생성됨 (카카오톡 공유용 URL 포함)
+          description: OK (처음 조회한 사람이 있으면 그 시점에 만들어짐)
           content:
             application/json:
               schema:
@@ -596,6 +589,30 @@ paths:
               schema: { $ref: "#/components/schemas/DeliveryAddress" }
 
   # ===================== Issues (family-facing, read-only) =====================
+  /groups/{groupId}/home:
+    get:
+      tags: [Issues]
+      summary: "공유 헤더 홈 읽기 모델 (HOME-01~06, 조아영 조판 API 설계 제안으로 신설)"
+      description: |
+        상태 줄(HOME-02)·질문카드(HOME-01)·알림 표시를 앱 실행/가족 전환마다 한 번에 받기 위한
+        합성 엔드포인트. 그때그때 `GET /groups/{groupId}/issues/current` +
+        `GET /groups/{groupId}/questions/current` + `GET /me/notifications`를 따로 부르는 대신
+        한 번의 호출로 묶는다.
+      parameters: [{ $ref: "#/components/parameters/GroupId" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issue: { $ref: "#/components/schemas/Issue" }
+                  questions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Question" }
+                  unreadNotificationCount: { type: integer }
+
   /groups/{groupId}/issues:
     parameters: [{ $ref: "#/components/parameters/GroupId" }]
     get:
@@ -739,6 +756,37 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /uploads/presign:
+    post:
+      tags: [Feed]
+      summary: 사진 업로드용 presigned URL 발급 (NFR-03, POST-07 마감 유예)
+      description: |
+        글(post)보다 업로드가 먼저 시작되는 구조라 `/posts/{postId}/media`가 아니라 독립
+        경로로 둔다(조아영 조판 API 설계 제안 반영, 원래 `/media/{mediaId}/upload-url`).
+        **`initiatedAt`은 이 호출 시각으로 서버가 기록**한다 — 마감 유예(POST-07, 마감 후 14분)
+        판정에 쓰이는 값이라 클라이언트가 조작할 수 없게 서버 발급 시각을 기준으로 삼는다
+        (조아영 조판 API 설계에서 지적한 문제: 기존에는 이 값을 클라이언트가 그대로 보냈음).
+        발급된 `uploadId`는 `POST /posts/{postId}/media` 등록 때 그대로 돌려준다.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sha256: { type: string, description: "미리 알면 중복 업로드를 건너뛸 수 있음(선택)" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uploadId: { type: string, format: uuid }
+                  uploadUrl: { type: string, format: uri }
+                  initiatedAt: { type: string, format: date-time, description: "서버가 기록한 업로드 시작 시각" }
+                  expiresAt: { type: string, format: date-time }
+
   /posts/{postId}/media:
     parameters:
       - name: postId
@@ -748,15 +796,16 @@ paths:
     post:
       tags: [Feed]
       summary: 사진 첨부 (POST-05)
-      description: presigned URL로 직접 업로드한 뒤 그 storage key를 등록한다.
+      description: "`POST /uploads/presign`으로 직접 업로드한 뒤 그 결과를 등록한다. `initiatedAt`은 서버가 `uploadId`로 조회해 채우므로 요청 본문에는 없다."
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [storageKey, sha256, width, height]
+              required: [uploadId, storageKey, sha256, width, height]
               properties:
+                uploadId: { type: string, format: uuid, description: "POST /uploads/presign 이 발급한 값" }
                 storageKey: { type: string }
                 sha256: { type: string }
                 width: { type: integer }
@@ -768,27 +817,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Media" }
-
-  /media/{mediaId}/upload-url:
-    post:
-      tags: [Feed]
-      summary: 사진 업로드용 presigned URL 발급 (NFR-03)
-      parameters:
-        - name: mediaId
-          in: path
-          required: true
-          description: 클라이언트가 미리 생성한 ID (업로드 후 /posts/{postId}/media 등록에 사용)
-          schema: { type: string, format: uuid }
-      responses:
-        "200":
-          description: OK
+        "422":
+          description: "uploadId가 없거나 만료됨"
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  uploadUrl: { type: string, format: uri }
-                  expiresAt: { type: string, format: date-time }
+              schema: { $ref: "#/components/schemas/Error" }
 
   /media/{mediaId}:
     delete:
@@ -826,33 +859,60 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Question" }
 
-  /groups/{groupId}/answers:
-    parameters: [{ $ref: "#/components/parameters/GroupId" }]
-    post:
+  /groups/{groupId}/questions/{questionId}/answer:
+    parameters:
+      - $ref: "#/components/parameters/GroupId"
+      - name: questionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
       tags: [Questions]
-      summary: 질문 답변 작성 (QST-03)
-      description: 1인당 질문당 답변 1개(삭제되지 않은 것만).
+      summary: 질문 답변 작성/수정 (QST-03/04)
+      description: |
+        1인당 질문당 답변은 항상 1개뿐이라 멱등 PUT 하나로 생성·수정을 겸한다(조아영 조판 API
+        설계 제안 반영 — 원래 POST /groups/{groupId}/answers로 만들고 PATCH /posts/{postId}로
+        고치던 것을 하나로 합침). 처음 호출하면 생성(201), 이미 답변이 있으면 그 내용을
+        바꾼다(200). 마감 전까지만 가능(QST-04).
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [questionId]
               properties:
-                questionId: { type: string, format: uuid }
                 questionOption: { type: string, description: "선택형 질문의 선택지. 주관식은 생략" }
                 body: { type: string, description: "한 줄 덧붙이기(선택) 또는 주관식 답" }
                 visibility: { $ref: "#/components/schemas/Visibility" }
       responses:
-        "201":
-          description: 생성됨
+        "200":
+          description: 기존 답변이 수정됨
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Post" }
-        "409": { description: 이미 답변함 }
+        "201":
+          description: 새로 생성됨
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Post" }
+        "422":
+          description: 마감된 기간 / 금칙어 포함
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [Questions]
+      summary: 답변 삭제 (QST-04, 본인만·마감 전까지만, 소프트 삭제)
+      responses:
+        "204": { description: 삭제됨 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422":
+          description: 마감 후 삭제 시도
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
-  /questions/{questionId}/answers:
+  /groups/{groupId}/questions/{questionId}/answers:
     get:
       tags: [Questions]
       summary: 그 질문에 대한 가족 답변 목록 (QST-05)
@@ -862,6 +922,7 @@ paths:
         아직 응답에 없음). '할머니께만' 답변과 내가 개인 차단(SAFE-02)한 사람은 두 목록 모두에서
         제외된다. 독촉 의도의 알림은 보내지 않는다(NOTI-04).
       parameters:
+        - $ref: "#/components/parameters/GroupId"
         - name: questionId
           in: path
           required: true
@@ -889,16 +950,19 @@ paths:
                         type: array
                         items: { $ref: "#/components/schemas/Post" }
 
-  /posts/{postId}/comments:
+  /answers/{answerId}/comments:
     parameters:
-      - name: postId
+      - name: answerId
         in: path
         required: true
+        description: "질문 답변인 게시물의 id(= post.id). 자유 게시물은 허용되지 않는다"
         schema: { type: string, format: uuid }
     post:
       tags: [Comments]
       summary: 답변 댓글 작성 (QST-06)
-      description: 질문 답변에만 허용(자유 게시물 거부). 마감 후 불가.
+      description: |
+        질문 답변에만 허용(자유 게시물 거부, 경로 이름으로도 드러냄 — 조아영 조판 API 설계
+        제안 반영, 원래 /posts/{postId}/comments). 마감 후 불가.
       requestBody:
         required: true
         content:
@@ -977,11 +1041,14 @@ paths:
   /issues/{issueId}/newsletter:
     get:
       tags: [Newsletter]
-      summary: 발송 완료된 신문의 열람용 페이지 이미지 목록 (PUB-02, NEWS-01, 1004 결정)
+      summary: 발송 완료된 신문의 열람용 페이지 이미지 목록 (PUB-02, NEWS-01)
       description: |
         인쇄용 PDF가 아니라 서버가 따로 만든 **열람용 페이지 이미지**(면마다 1장, '할머니께만' 블러를
-        서버에서 입힌 것)를 돌려준다. 앱은 이 이미지를 책처럼 한 면씩 넘겨 보여준다(리플로우 없음,
-        종이 지면과 같은 모양). 발송 완료 전에는 404. 다운로드·공유는 제공하지 않는다(앱 안에서만 보기).
+        서버에서 입힌 것, 작성자 본인에게도 블러)를 돌려준다. 앱은 이 이미지를 책처럼 한 면씩 넘겨
+        보여준다(리플로우 없음, 종이 지면과 같은 모양). 발송 완료 전에는 404. 다운로드·공유는 제공하지
+        않는다(앱 안에서만 보기). **호출할 때마다 열람 기록이 자동으로 남는다(M-12, 멱등 아님)** —
+        별도 view 엔드포인트는 두지 않는다. 앱이 빠뜨리거나 중복 호출하면 지표가 어긋나므로 조회
+        자체에 기록을 묶었다.
       parameters: [{ $ref: "#/components/parameters/IssueId" }]
       responses:
         "200":
@@ -991,6 +1058,8 @@ paths:
               schema:
                 type: object
                 properties:
+                  issueId: { type: string, format: uuid }
+                  pageCount: { type: integer }
                   pages:
                     type: array
                     description: "pageNo 순서대로"
@@ -999,16 +1068,8 @@ paths:
                       properties:
                         pageNo: { type: integer }
                         imageUrl: { type: string, format: uri, description: "만료되는 서명 URL(NFR-08)" }
+                  expiresAt: { type: string, format: date-time, description: "imageUrl 공통 만료 시각" }
         "404": { description: 아직 발송 전 }
-
-  /issues/{issueId}/newsletter/view:
-    post:
-      tags: [Newsletter]
-      summary: 신문 PDF 열람 기록 (M-12)
-      description: 열 때마다 기록이 쌓인다(멱등 아님).
-      parameters: [{ $ref: "#/components/parameters/IssueId" }]
-      responses:
-        "201": { description: 기록됨 }
 
   # ===================== Admin =====================
   /admin/auth/login:
@@ -1053,12 +1114,16 @@ paths:
   /admin/issues:
     get:
       tags: [AdminIssues]
-      summary: 전체 가족의 호 상태 목록 (ADM-02)
+      summary: 전체 가족방의 호 상태 목록 (ADM-02)
+      description: "`phase`(내부 상태, 세분화)와 `reviewed`(검수 마커) 조합으로 필터링. 목록은 `displayState`도 함께 내려준다."
       security: [{ operatorBearer: [] }]
       parameters:
-        - name: status
+        - name: phase
           in: query
-          schema: { $ref: "#/components/schemas/IssueStatus" }
+          schema: { $ref: "#/components/schemas/IssuePhase" }
+        - name: reviewed
+          in: query
+          schema: { type: boolean }
       responses:
         "200":
           description: OK
@@ -1071,42 +1136,26 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Issue" }
 
-  /admin/issues/{issueId}/status:
-    patch:
+  /admin/issues/{issueId}:
+    get:
       tags: [AdminIssues]
-      summary: "호 상태를 '발송 완료'로 수동 전환 (ADM-02)"
-      description: |
-        모집 마감·신문 만드는 중은 자동 전환되고, '발송 완료'만 운영자가 수동으로 전환한다.
-        전환하면 가족 전원에게 발송완료 푸시가 간다(NOTI-03).
+      summary: 호 상세 (ADM-02) — 최신 조판 실행, 인쇄 작업, 검수 마커
       security: [{ operatorBearer: [] }]
       parameters: [{ $ref: "#/components/parameters/IssueId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [status]
-              properties:
-                status: { type: string, enum: [printed] }
       responses:
         "200":
-          description: 전환됨
+          description: OK
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Issue" }
-        "422":
-          description: 전이 사전조건 미충족(인쇄 작업 없음 등)
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
 
-  /admin/issues/{issueId}/overrides:
-    parameters: [{ $ref: "#/components/parameters/IssueId" }]
+  /admin/issues/{issueId}/pdf:
     get:
-      tags: [AdminReview]
-      summary: 조판 수정 로그 조회 (ADM-03)
+      tags: [AdminCompose]
+      summary: 가족별 인쇄용 PDF 서명 URL (ADM-03/04)
+      description: "`IN_REVIEW` 상태에서만 제공된다 (조판·블러 적용까지 끝난 결과)."
       security: [{ operatorBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/IssueId" }]
       responses:
         "200":
           description: OK
@@ -1115,69 +1164,115 @@ paths:
               schema:
                 type: object
                 properties:
-                  items:
-                    type: array
-                    items: { $ref: "#/components/schemas/Override" }
+                  pdfUrl: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+                  runNo: { type: integer }
+                  status: { type: string, enum: [DONE] }
+        "409":
+          description: "호가 IN_REVIEW가 아님 (NOT_IN_REVIEW)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/issues/{issueId}/recompose:
     post:
-      tags: [AdminReview]
-      summary: "조판 검수 중 수정 생성 (ADM-03, 게시물 제외·재조판 등)"
+      tags: [AdminCompose]
+      summary: "게시물 제외 후 다시 만들기 (ADM-03)"
       description: |
-        review 상태에서만 허용된다. 조판을 다시 만드는 실제 처리(재조판 큐 적재 등)는
-        조판 엔진 쪽 API가 담당 — 여기서는 "무엇을 어떻게 고칠지"의 기록(override)만 남긴다.
+        제외는 그 호의 신문에서만 빠진다 — 가족 피드의 원본 게시물은 그대로 남는다.
+        이전 조판 실행(run)은 superseded로 보존되고 새 run이 큐에 오른다(내부 상태 IN_REVIEW → COMPOSING).
+        재조판 횟수에 별도 상한은 없다.
       security: [{ operatorBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/IssueId" }]
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [targetType, targetId, op]
+              required: [excludePostIds]
               properties:
-                targetType: { type: string, enum: [page, placement, media] }
-                targetId: { type: string, format: uuid }
-                op:
-                  type: object
-                  description: "move/resize/swap/crop/pin/exclude 등 수정 내용"
+                excludePostIds:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uuid }
+                note: { type: string, nullable: true }
       responses:
-        "201":
-          description: 생성됨
+        "200":
+          description: 다시 만들기 큐에 올라감 (완료까지 기다리지 않고 즉시 응답 — 운영자가 호 상세를 다시 조회해 진행 확인)
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Override" }
-        "422":
-          description: review 상태가 아니거나 무효화된 조판
+              schema:
+                type: object
+                properties:
+                  issueId: { type: string, format: uuid }
+                  phase: { type: string, enum: [COMPOSING] }
+                  excludedCount: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: "호가 IN_REVIEW가 아님 (NOT_IN_REVIEW)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /admin/pages/{pageId}/lock:
-    parameters:
-      - name: pageId
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
+  /admin/issues/{issueId}/compose/retry:
     post:
-      tags: [AdminReview]
-      summary: 페이지 편집 락 획득
+      tags: [AdminCompose]
+      summary: "조판 3회 실패 후 재시도 (ADM-03/08)"
       security: [{ operatorBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/IssueId" }]
       responses:
         "200":
-          description: OK
+          description: 재시도 큐에 올라감
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PageLock" }
-        "409": { description: 다른 사람이 편집 중 }
-    delete:
-      tags: [AdminReview]
-      summary: 페이지 편집 락 해제
-      security: [{ operatorBearer: [] }]
-      responses:
-        "204": { description: 해제됨 }
+              schema:
+                type: object
+                properties:
+                  resetCount: { type: integer }
+                  phase: { type: string, enum: [COMPOSING] }
+        "409":
+          description: "호가 COMPOSE_FAILED가 아님"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
-  /admin/issues/{issueId}/print-job:
+  /admin/issues/{issueId}/markers:
+    patch:
+      tags: [AdminCompose]
+      summary: 검수 마커 표시 (ADM-03, 표시용·진행 추적용)
+      description: |
+        `reviewed`는 운영자가 직접 켜는 표시용 마커이고 발송 완료 전환의 필수 조건은 아니다
+        (경고만 — `GET .../ship-check` 참고). 재조판하면 초기화된다. `printDownloaded`는
+        `POST /admin/print/pdf-exports`에서 자동으로 파생되며 이 엔드포인트로는 바꿀 수 없다.
+      security: [{ operatorBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/IssueId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reviewed]
+              properties:
+                reviewed: { type: boolean }
+      responses:
+        "200":
+          description: 변경됨 (호 상태는 바뀌지 않음)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssueMarkers" }
+        "409":
+          description: "호가 IN_REVIEW가 아님 (NOT_IN_REVIEW)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/issues/{issueId}/ship-check:
     get:
-      tags: [AdminPrinting]
-      summary: 인쇄용 PDF 작업 상태 (ADM-04)
+      tags: [AdminCompose]
+      summary: 발송 완료 사전 점검 (ADM-02)
+      description: "필수 항목이 하나라도 걸리면 전환 불가. 경고 항목은 확인 후 그대로 전환 가능."
       security: [{ operatorBearer: [] }]
       parameters: [{ $ref: "#/components/parameters/IssueId" }]
       responses:
@@ -1185,18 +1280,84 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PrintJob" }
+              schema:
+                type: object
+                properties:
+                  canShip: { type: boolean }
+                  notifyCount: { type: integer, description: "발송 완료 전환 시 푸시 받을 활동 중인 구성원 수" }
+                  blockers:
+                    type: array
+                    description: "필수 — NOT_IN_REVIEW/NO_READY_PDF/NO_CONTENT"
+                    items: { type: string }
+                  warnings:
+                    type: array
+                    description: "경고 — NOT_REVIEWED/PDF_NOT_DOWNLOADED"
+                    items: { type: string }
 
-  /admin/print-jobs/{jobId}/download:
-    get:
-      tags: [AdminPrinting]
-      summary: 인쇄용 PDF 다운로드 URL (ADM-04, 인쇄소 전달용)
+  /admin/issues/{issueId}/ship:
+    post:
+      tags: [AdminCompose]
+      summary: "발송 완료로 전환 (ADM-02)"
+      description: |
+        명세의 수동 전환은 이 엔드포인트 하나뿐이다(PUB-01). 전환은 되돌릴 수 없고(취소 없음 — 푸시가
+        이미 나가면 돌이킬 수 없어서), 그래서 먼저 `GET .../ship-check`로 점검하고 `confirmed: true`로
+        명시적으로 확인해야 한다. 전환하면 활동 중인 구성원 전원에게 발송완료 푸시(NOTI-03)가 간다.
       security: [{ operatorBearer: [] }]
-      parameters:
-        - name: jobId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
+      parameters: [{ $ref: "#/components/parameters/IssueId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmed]
+              properties:
+                confirmed: { type: boolean, enum: [true] }
+                note: { type: string, nullable: true }
+      responses:
+        "200":
+          description: 전환됨
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issueId: { type: string, format: uuid }
+                  phase: { type: string, enum: [SENT] }
+                  displayState: { type: string, enum: [SENT] }
+                  changedAt: { type: string, format: date-time }
+        "409":
+          description: "필수 사전 점검 불통과 (SHIP_BLOCKED)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "경고 항목 확인 없이 전환 시도 (CONFIRMATION_REQUIRED)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/print/pdf-exports:
+    post:
+      tags: [AdminCompose]
+      summary: 인쇄용 PDF 일괄 다운로드 (ADM-04, 인쇄소 전달용)
+      description: |
+        여러 호의 인쇄용 PDF를 zip으로 묶어 받는다. 다운로드하면 그 호들의 `printDownloaded`
+        마커가 자동으로 켜진다(부작용이 있어 GET이 아니라 POST). 배송 주문 상태(발송/추적)는
+        택배 API 연동이 없어(PUB-03) API로 추적하지 않는다 — 배송지는 아래 엑셀로만 받는다.
+      security: [{ operatorBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issueIds]
+              properties:
+                issueIds:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uuid }
       responses:
         "200":
           description: OK
@@ -1206,62 +1367,26 @@ paths:
                 type: object
                 properties:
                   downloadUrl: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+                  count: { type: integer }
 
-  /admin/issues/{issueId}/print-orders:
+  /admin/print/addresses.xlsx:
     get:
-      tags: [AdminPrinting]
-      summary: 호별 배송 주문 목록 (ADM-04)
-      security: [{ operatorBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/IssueId" }]
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  items:
-                    type: array
-                    items: { $ref: "#/components/schemas/PrintOrder" }
-
-  /admin/issues/{issueId}/print-orders/export:
-    get:
-      tags: [AdminPrinting]
+      tags: [AdminCompose]
       summary: 배송지 목록 엑셀 다운로드 (ADM-04, 팀이 직접 우편 발송)
       security: [{ operatorBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/IssueId" }]
+      parameters:
+        - name: issueIds
+          in: query
+          required: true
+          schema: { type: array, items: { type: string, format: uuid } }
+          description: "쉼표로 구분된 호 id 목록. 배송지는 마감 시점 주소로 고정(RCV-02)"
       responses:
         "200":
           description: xlsx 파일
           content:
             application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
               schema: { type: string, format: binary }
-
-  /admin/print-orders/{orderId}:
-    patch:
-      tags: [AdminPrinting]
-      summary: 배송 주문 상태 갱신 (운영팀 내부 추적용)
-      security: [{ operatorBearer: [] }]
-      parameters:
-        - name: orderId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                status: { $ref: "#/components/schemas/PrintOrderStatus" }
-                tracking: { type: string }
-      responses:
-        "200":
-          description: 수정됨
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/PrintOrder" }
 
   /admin/reports:
     get:
@@ -1453,14 +1578,31 @@ components:
       default: all
       description: "POST-02. recipient_only = '할머니께만'"
 
-    IssueStatus:
+    IssuePhase:
       type: string
-      enum: [collecting, closing, review, printing, printed, skipped, archived]
-      description: "가족에게는 모집 중/모집 마감/신문 만드는 중/발송 완료 4단계로 단순화해서 보여준다(PUB-01)."
+      enum: [COLLECTING, CLOSED, COMPOSING, COMPOSE_FAILED, IN_REVIEW, SENT]
+      description: |
+        운영자 전용 내부 상태(세분화). DB `issue.status`보다 자세하다 — CLOSED/COMPOSING/COMPOSE_FAILED는
+        전부 DB상 'closing'이지만 운영자는 구분해서 봐야 한다(조판 API 설계, 2026-10-06 확정).
+        전이: COLLECTING → CLOSED → COMPOSING → IN_REVIEW → SENT, COMPOSING ↔ COMPOSE_FAILED(최대 3회),
+        IN_REVIEW → COMPOSING(재조판). SENT는 되돌릴 수 없다.
 
-    PrintOrderStatus:
+    DisplayState:
       type: string
-      enum: [pending, confirmed, printing, shipped, delivered, cancelled]
+      enum: [COLLECTING, PRODUCING, SENT]
+      description: |
+        가족에게 보여주는 단순화된 상태(PUB-01, HOME-02). 모집 마감·조판·검수는 전부
+        "신문 만드는 중"(PRODUCING)으로 합쳐 보여준다 — 자동 전환이라 사용자는 구분할 필요가 없다.
+
+    IssueMarkers:
+      type: object
+      description: "운영자 검수 진행 추적용 표시 마커(ADM-03). 발송 완료 전환의 필수 조건은 아니다(경고만)."
+      properties:
+        reviewed: { type: boolean }
+        reviewedBy: { type: string, format: uuid, nullable: true }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        printDownloaded: { type: boolean, description: "POST /admin/print/pdf-exports 로 다운로드하면 자동으로 켜짐" }
+        printDownloadedAt: { type: string, format: date-time, nullable: true }
 
     SignupConsent:
       type: object
@@ -1610,7 +1752,9 @@ components:
         title: { type: string, example: "2026년 10월호" }
         periodStart: { type: string, format: date }
         periodEnd: { type: string, format: date }
-        status: { $ref: "#/components/schemas/IssueStatus" }
+        phase: { $ref: "#/components/schemas/IssuePhase", description: "운영자 전용 (AdminIssues/AdminCompose 응답에만 채움)" }
+        displayState: { $ref: "#/components/schemas/DisplayState", description: "가족에게 보여줄 때 쓰는 값" }
+        markers: { allOf: [{ $ref: "#/components/schemas/IssueMarkers" }], nullable: true, description: "운영자 전용" }
         closeAt: { type: string, format: date-time }
         closedAt: { type: string, format: date-time, nullable: true }
         progress:
@@ -1690,49 +1834,6 @@ components:
         name: { type: string }
         email: { type: string }
 
-    Override:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        issueId: { type: string, format: uuid }
-        runId: { type: string, format: uuid }
-        targetType: { type: string, enum: [page, placement, media] }
-        targetId: { type: string, format: uuid }
-        op: { type: object }
-        authorId: { type: string, format: uuid, nullable: true, description: "가족이 만든 수정(현재 스펙상 사용 안 함)" }
-        operatorId: { type: string, format: uuid, nullable: true, description: "운영자가 만든 수정(ADM-03)" }
-        createdAt: { type: string, format: date-time }
-
-    PageLock:
-      type: object
-      properties:
-        pageId: { type: string, format: uuid }
-        userId: { type: string, format: uuid }
-        expiresAt: { type: string, format: date-time }
-
-    PrintJob:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        issueId: { type: string, format: uuid }
-        status: { type: string, enum: [queued, rendering, preflight_failed, ready, failed] }
-        pdfKey: { type: string, nullable: true }
-        preflightReport: { type: object, nullable: true }
-        createdAt: { type: string, format: date-time }
-
-    PrintOrder:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        printJobId: { type: string, format: uuid }
-        recipientName: { type: string }
-        postalCode: { type: string }
-        addressLine1: { type: string }
-        addressLine2: { type: string, nullable: true }
-        quantity: { type: integer }
-        status: { $ref: "#/components/schemas/PrintOrderStatus" }
-        tracking: { type: string, nullable: true }
-        createdAt: { type: string, format: date-time }
 
     OperatorAlert:
       type: object
