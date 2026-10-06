@@ -5,28 +5,33 @@
 -- 조판 워커 계약: 임대(lease) 기반 작업 큐
 --
 -- 워커 흐름
---   1. claim_compose_job(worker)   : 마감된 호 1건을 가져가 layout_run(status=running)을 만든다. 없으면 0행.
+--   1. claim_compose_job(worker)   : 마감 +15분이 지난 호 1건을 가져가 layout_run(status=running)을 만든다. 없으면 0행.
 --   2. (조판 계산 중) heartbeat_compose_job(run, worker)  : 주기적으로 호출. false 면 내 작업이 무효가 된 것 -> 즉시 중단
---   3. 한 트랜잭션 안에서 page/placement 를 저장한 뒤 complete_compose_job(...)
+--   3. 같은 트랜잭션 안에서 page/placement/preview(열람용 이미지)/print_job(인쇄용 PDF)을 전부 저장한 뒤 complete_compose_job(...)
 --        - 아직 내 작업이 유효할 때만 done 으로 바꾸고, 호를 closing -> review 로 넘긴다.
---        - 무효(superseded/reaped/탈취)면 예외 -> 저장하던 page/placement 까지 전부 롤백된다.
---   4. 실패하면 fail_compose_job(run, worker, 사유). 3번 실패한 호는 큐에서 빠지고 compose_failed 로 표시된다.
+--        - 무효(superseded/reaped/탈취)면 예외 -> 저장하던 것까지 전부 롤백된다.
+--   4. 실패하면 fail_compose_job(run, worker, 사유 코드, 메시지). input_invalid/no_content는 재시도해도 같은
+--      결과라 바로 운영 알림을 남기고 자동 재시도 대상에서 빠진다. 그 외 사유는 1분·5분 대기 후 재시도,
+--      3번째 실패에서 운영 알림을 남기고 큐에서 빠진다(compose_failed).
 --
--- 워커가 죽으면: running 인데 heartbeat 가 timeout(기본 5분) 넘게 멈춘 실행을 claim 때 자동으로 failed 처리하고
+-- 워커가 죽으면: running 인데 heartbeat 가 timeout(기본 2분) 넘게 멈춘 실행을 claim 때 자동으로 failed 처리하고
 --               다른 워커가 이어받는다 (이전 워커가 뒤늦게 살아나도 complete 가 거부된다).
+--
+-- 마감(close_at)과 조판 시작(+15분) 사이에는 사진 업로드 유예(POST-07, 마감 후 14분)가 걸려있다.
+-- 유예 중 등록된 사진이 조판에서 빠지지 않도록, claim 은 마감 +15분이 지나기 전에는 그 호를 가져가지 않는다.
 
 -- =========================================================
--- 1. 오래된 running 정리
+-- 1. 오래된 running 정리 (확정값: timeout 2분, 2026-10-06 조판 API 설계)
 -- =========================================================
 CREATE OR REPLACE FUNCTION reap_stale_compose_jobs(
-    p_now timestamptz DEFAULT now(), p_timeout interval DEFAULT interval '5 minutes')
+    p_now timestamptz DEFAULT now(), p_timeout interval DEFAULT interval '2 minutes')
 RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
     n int;
 BEGIN
     UPDATE layout_run
-       SET status = 'failed', finished_at = p_now,
+       SET status = 'failed', finished_at = p_now, failure_code = 'worker_lost',
            log = COALESCE(log || E'\n', '') || format('worker %s lost: no heartbeat since %s', locked_by, heartbeat_at)
      WHERE status = 'running' AND heartbeat_at < p_now - p_timeout;
     GET DIAGNOSTICS n = ROW_COUNT;
@@ -37,10 +42,12 @@ END $$;
 -- 2. 작업 가져가기
 --    조건은 v_compose_queue 와 같다 (잠금 때문에 뷰를 쓰지 못해 복제했으므로, 바꿀 때는 둘을 같이 바꿀 것)
 --    FOR UPDATE SKIP LOCKED 라서 여러 워커가 동시에 불러도 같은 호를 받지 않는다.
+--    확정값(2026-10-06 조판 API 설계): 마감 +15분부터, 실패 재시도는 1회차 1분·2회차 5분 대기,
+--    input_invalid/no_content로 실패한 호는 대기 없이 바로 재시도 대상에서 제외.
 -- =========================================================
 CREATE OR REPLACE FUNCTION claim_compose_job(
     p_worker text, p_algorithm_version text,
-    p_timeout interval DEFAULT interval '5 minutes', p_now timestamptz DEFAULT now())
+    p_timeout interval DEFAULT interval '2 minutes', p_now timestamptz DEFAULT now())
 RETURNS TABLE (o_run_id uuid, o_issue_id uuid, o_seed bigint, o_attempt int)
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -54,11 +61,23 @@ BEGIN
 
     SELECT i.id, i.template_id INTO v_issue, v_tpl
       FROM issue i
+      LEFT JOIN LATERAL (
+          SELECT lr.finished_at, lr.attempts, lr.failure_code
+            FROM layout_run lr
+           WHERE lr.issue_id = i.id AND lr.status = 'failed'
+           ORDER BY lr.seq DESC LIMIT 1
+      ) last_fail ON true
      WHERE i.status = 'closing'
+       AND p_now >= i.close_at + interval '15 minutes'
        AND NOT EXISTS (SELECT 1 FROM layout_run lr
                         WHERE lr.issue_id = i.id AND lr.status IN ('queued','running','done'))
        AND (SELECT count(*) FROM layout_run lr
              WHERE lr.issue_id = i.id AND lr.status = 'failed') < 3
+       AND (last_fail.finished_at IS NULL OR last_fail.failure_code IS NULL
+            OR last_fail.failure_code NOT IN ('input_invalid', 'no_content'))
+       AND (last_fail.finished_at IS NULL OR last_fail.failure_code = 'worker_lost'
+            OR p_now >= last_fail.finished_at
+                        + CASE WHEN last_fail.attempts <= 1 THEN interval '1 minute' ELSE interval '5 minutes' END)
      ORDER BY i.closed_at, i.id
      LIMIT 1
        FOR UPDATE OF i SKIP LOCKED;
@@ -95,6 +114,8 @@ END $$;
 -- =========================================================
 -- 4. 완료: 조건부 갱신 + 호를 review 로 전환 (같은 트랜잭션)
 --    무효가 된 작업이면 예외 -> 호출한 트랜잭션 전체 롤백
+--    확정값(2026-10-06 조판 API 설계): 열람용 페이지 이미지(preview)·인쇄용 PDF(print_job)까지
+--    만든 뒤에만 review 로 넘긴다 — 운영자가 이미지 없는 빈 결과를 보는 일이 없게.
 -- =========================================================
 CREATE OR REPLACE FUNCTION complete_compose_job(
     p_run uuid, p_worker text, p_input_hash text, p_score real DEFAULT NULL,
@@ -117,6 +138,13 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM page WHERE run_id = p_run) THEN
         RAISE EXCEPTION 'compose job % produced no pages', p_run;
     END IF;
+    IF (SELECT count(*) FROM page WHERE run_id = p_run)
+       <> (SELECT count(*) FROM preview WHERE run_id = p_run AND override_seq = 0 AND status = 'done') THEN
+        RAISE EXCEPTION 'compose job %: 모든 쪽의 열람용 페이지 이미지(preview)가 준비되지 않음', p_run;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM print_job WHERE run_id = p_run AND status = 'ready') THEN
+        RAISE EXCEPTION 'compose job %: 인쇄용 PDF(print_job)가 준비되지 않음(ready 상태 아님)', p_run;
+    END IF;
 
     PERFORM change_issue_status(v_issue, 'review', NULL, format('자동 조판 완료 (run #%s)',
             (SELECT run_no FROM layout_run WHERE id = p_run)));
@@ -124,23 +152,25 @@ END $$;
 
 -- =========================================================
 -- 5. 실패 보고 (내 작업이 아직 유효할 때만 기록, 아니면 조용히 false)
+--    확정값(2026-10-06 조판 API 설계): 사유를 코드로 남긴다. input_invalid/no_content는 재시도해도
+--    같은 결과라 3회를 기다리지 않고 바로 운영 알림(claim_compose_job() 이 재시도 대상에서 뺀다).
 -- =========================================================
 CREATE OR REPLACE FUNCTION fail_compose_job(
-    p_run uuid, p_worker text, p_error text, p_now timestamptz DEFAULT now())
+    p_run uuid, p_worker text, p_reason_code text, p_error text, p_now timestamptz DEFAULT now())
 RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
     v_issue uuid; v_attempts int;
 BEGIN
     UPDATE layout_run
-       SET status = 'failed', finished_at = p_now, log = left(p_error, 2000)
+       SET status = 'failed', finished_at = p_now, log = left(p_error, 2000), failure_code = p_reason_code
      WHERE id = p_run AND status = 'running' AND locked_by = p_worker
     RETURNING issue_id, attempts INTO v_issue, v_attempts;
 
     IF NOT FOUND THEN RETURN false; END IF;
 
-    -- 3번째 시도까지 실패하면(큐에서 빠짐, v_compose_queue 와 같은 기준) 운영 알림(ADM-08)
-    IF v_attempts >= 3 THEN
+    -- input_invalid/no_content는 1회만 실패해도 바로 운영 알림. 그 외는 3번째 시도까지 실패하면 운영 알림(ADM-08)
+    IF p_reason_code IN ('input_invalid', 'no_content') OR v_attempts >= 3 THEN
         INSERT INTO operator_alert_log (kind, ref_type, ref_id) VALUES ('layout_failed', 'issue', v_issue);
     END IF;
     RETURN true;
@@ -178,20 +208,34 @@ CREATE TRIGGER trg_layout_run_no BEFORE INSERT ON layout_run
     FOR EACH ROW EXECUTE FUNCTION layout_run_assign_no();
 
 -- =========================================================
--- 4. 조판 워커용 큐: 마감됐는데 아직 조판이 시작/완료되지 않은 호
+-- 4. 조판 워커용 큐: 마감 +15분이 지났는데 아직 조판이 시작/완료되지 않은 호
 --    superseded(재오픈/재조판으로 무효가 된 실행)는 무시하므로 다시 마감된 호는 새로 조판된다.
 --    실패 3회 이상이면 자동 재시도를 멈춘다 (사람이 확인해야 함 -> current_step=compose_failed)
+--    input_invalid/no_content로 실패했으면 1회만에도 재시도를 멈춘다. 그 외 실패는 1분·5분 대기 후 노출.
 --    워커는 SELECT ... FOR UPDATE SKIP LOCKED 로 한 건씩 가져가 layout_run 을 만든다.
 --    저장 직전에 자기 layout_run 이 superseded 가 아닌지 확인할 것.
+--    claim_compose_job() 과 조건이 같다 (잠금 때문에 이 뷰를 그대로 못 쓰니 복제함 - 바꿀 때는 둘을 같이 바꿀 것)
 -- =========================================================
 CREATE OR REPLACE VIEW v_compose_queue AS
 SELECT i.id AS issue_id, i.closed_at
   FROM issue i
+  LEFT JOIN LATERAL (
+      SELECT lr.finished_at, lr.attempts, lr.failure_code
+        FROM layout_run lr
+       WHERE lr.issue_id = i.id AND lr.status = 'failed'
+       ORDER BY lr.seq DESC LIMIT 1
+  ) last_fail ON true
  WHERE i.status = 'closing'
+   AND now() >= i.close_at + interval '15 minutes'
    AND NOT EXISTS (SELECT 1 FROM layout_run lr
                     WHERE lr.issue_id = i.id AND lr.status IN ('queued','running','done'))
    AND (SELECT count(*) FROM layout_run lr
-         WHERE lr.issue_id = i.id AND lr.status = 'failed') < 3;
+         WHERE lr.issue_id = i.id AND lr.status = 'failed') < 3
+   AND (last_fail.finished_at IS NULL OR last_fail.failure_code IS NULL
+        OR last_fail.failure_code NOT IN ('input_invalid', 'no_content'))
+   AND (last_fail.finished_at IS NULL OR last_fail.failure_code = 'worker_lost'
+        OR now() >= last_fail.finished_at
+                     + CASE WHEN last_fail.attempts <= 1 THEN interval '1 minute' ELSE interval '5 minutes' END);
 
 -- =========================================================
 -- 정합성 가드: 배치(placement)에는 이 호에서 선별된(issue_media) 사진과 이 호의 텍스트만 올 수 있다

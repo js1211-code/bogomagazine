@@ -496,6 +496,9 @@ CREATE TABLE layout_run (
     score                real,
     report               jsonb,          -- 조판 결과 보고: {warnings, unplaced, stats}
     log                  text,
+    -- 실패 사유 코드(조판 API 설계 확정, 2026-10-06). input_invalid/no_content는 재시도해도 같은 결과라
+    -- claim_compose_job() 이 자동 재시도 대상에서 뺀다 (fail_compose_job() 이 바로 운영 알림도 남김)
+    failure_code         text CHECK (failure_code IN ('input_invalid','no_content','timeout','render_failed','storage_error','worker_lost')),
     started_at           timestamptz,
     finished_at          timestamptz,
     -- 워커 임대(lease): R__060_layout_worker.sql 의 claim/heartbeat/complete/fail/reap 함수가 관리

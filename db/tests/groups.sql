@@ -64,14 +64,16 @@ DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
         v1 family_invite%ROWTYPE; v2 family_invite%ROWTYPE;
 BEGIN
-  INSERT INTO family_invite (group_id, created_by, token_hash)
-  VALUES (g, u1, repeat('a', 64));
+  -- 방장이 아직 아무 링크도 안 만든 상태에서 먼저 검사해야 한다: 방장이 먼저 만들면 가족당 1개 제약과
+  -- 동시에 걸려서(unique_violation), 생성자 확인(trg_invite_creator)이 빠져도 다른 이유로 거부된 것처럼 보인다
   BEGIN
     INSERT INTO family_invite (group_id, created_by, token_hash)
     VALUES (g, u2, repeat('b', 64));
     RAISE EXCEPTION 'T21 failed: 일반 구성원이 초대를 만듦';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
+  INSERT INTO family_invite (group_id, created_by, token_hash)
+  VALUES (g, u1, repeat('a', 64));
   BEGIN
     INSERT INTO family_invite (group_id, created_by, token_hash)
     VALUES (g, u1, 'short');

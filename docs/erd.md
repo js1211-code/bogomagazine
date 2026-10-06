@@ -715,6 +715,7 @@ erDiagram
         real score
         jsonb report
         text log
+        text failure_code
         timestamptz started_at
         timestamptz finished_at
         text locked_by
@@ -976,7 +977,7 @@ erDiagram
 | feed | `question` | 9 | 질문카드 풀. MVP는 팀이 작성한 고정 풀(QST-02) |
 | feed | `report` | 9 | 콘텐츠 신고(SAFE-01). 운영자가 확인·조치(ADM-05) |
 | feed | `text_block` | 9 | 호에 들어가는 글 조각(제목/캡션/인용/본문) |
-| layout | `layout_run` | 21 | 자동 조판 실행 1회(seed, 알고리즘 버전, 워커 임대 정보) |
+| layout | `layout_run` | 22 | 자동 조판 실행 1회(seed, 알고리즘 버전, 워커 임대 정보) |
 | layout | `page` | 4 | 조판 결과의 페이지 |
 | layout | `placement` | 13 | 페이지 위 요소 배치(mm 단위) |
 | layout | `preview` | 6 | 페이지 미리보기 렌더 결과 |

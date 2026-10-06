@@ -412,14 +412,16 @@ BEGIN
   EXCEPTION WHEN check_violation THEN NULL;
   END;
 
-  PERFORM change_issue_status(v, 'collecting', NULL, '재오픈', now() + interval '1 day');
+  PERFORM change_issue_status(v, 'collecting', NULL, '재오픈', now() + interval '1 hour');
   ASSERT (SELECT status FROM issue WHERE id = v) = 'collecting', 'T50 재오픈 상태';
   ASSERT (SELECT closed_at IS NULL FROM issue WHERE id = v), 'T50 closed_at 초기화';
   ASSERT (SELECT close_at > now() FROM issue WHERE id = v), 'T50 close_at 연장';
   ASSERT (SELECT status FROM layout_run WHERE id = v_run) = 'superseded', 'T50 조판 무효화';
   ASSERT (SELECT count(*) FROM close_due_issues(now())) = 0, 'T50 재오픈 직후 배치가 다시 닫음';
 
-  PERFORM * FROM close_due_issues(now() + interval '2 days');
+  -- 마감 가드(미래 필수)는 위에서 이미 검증했으니, 실제 마감 시각 + 15분 유예가 지난 것처럼 시간을 이동한다
+  UPDATE issue SET close_at = now() - interval '20 minutes' WHERE id = v;
+  PERFORM * FROM close_due_issues(now());
   ASSERT (SELECT status FROM issue WHERE id = v) = 'closing', 'T50 재마감';
   ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v) = 1, 'T50 재마감 호가 조판 큐에 없음';
 END $$;
