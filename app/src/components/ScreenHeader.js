@@ -6,16 +6,18 @@ import { colors, hairline, typography } from '../theme';
 export default function ScreenHeader({ title, onBack, bordered = false, titleStyle }) {
   return (
     <View style={[styles.bar, bordered && styles.bordered]}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="뒤로 가기"
-        onPress={onBack}
-        style={styles.back}
-      >
-        <View style={styles.chevron} />
-      </Pressable>
+      <BackButton onPress={onBack} />
       <Text style={[styles.title, titleStyle]}>{title}</Text>
     </View>
+  );
+}
+
+// 뒤로 가기 '<' 버튼 (44×44). 다른 머리말에서도 쓴다.
+export function BackButton({ onPress, label = '뒤로 가기' }) {
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={styles.back}>
+      <View style={styles.chevron} />
+    </Pressable>
   );
 }
 

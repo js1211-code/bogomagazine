@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Animated, BackHandler, Easing, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo, Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BrandHeader from '../../../components/BrandHeader';
 import { NewspaperIcon } from '../../../components/LineIcons';
+import { useBackHandler } from '../../../hooks/useBackHandler';
 import { colors, fonts, hairline } from '../../../theme';
 
 const BAR_FILL = 72; // Figma: 채워진 막대 너비
@@ -14,10 +15,7 @@ export default function CreatingScreen() {
   const slide = useRef(new Animated.Value(0)).current;
 
   // 안드로이드 뒤로 가기 버튼 막기 (iOS 밀어서 뒤로 가기는 _layout 에서 막았다)
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
-    return () => sub.remove();
-  }, []);
+  useBackHandler(useCallback(() => true, []));
 
   // 막대가 왼쪽에서 오른쪽으로 계속 지나간다. '동작 줄이기'를 켠 사람에게는 멈춰 있는 막대를 보여 준다.
   useEffect(() => {

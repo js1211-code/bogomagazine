@@ -1,10 +1,11 @@
 import * as Clipboard from 'expo-clipboard';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, BackHandler, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BrandHeader from '../../../components/BrandHeader';
 import Button from '../../../components/Button';
 import { useFamily } from '../../../context/FamilyContext';
+import { useBackHandler } from '../../../hooks/useBackHandler';
 import * as groupRepository from '../../../repositories/groupRepository';
 import { colors, hairline, radius, typography } from '../../../theme';
 
@@ -33,10 +34,7 @@ export default function DoneScreen() {
     return true;
   }, [finishSetup]);
 
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', leave);
-    return () => sub.remove();
-  }, [leave]);
+  useBackHandler(leave);
 
   const groupName = justCreatedGroup?.name ?? '';
 

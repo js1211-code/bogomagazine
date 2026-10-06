@@ -50,5 +50,6 @@ const styles = StyleSheet.create({
   title: { fontFamily: fonts.bold, fontSize: 18, lineHeight: 34, letterSpacing: -0.4, color: colors.text.primary },
   messageBox: { marginTop: 18, borderLeftWidth: 2, borderLeftColor: colors.border.default, paddingLeft: 12 },
   message: { ...typography.bodySmall, color: colors.text.secondary },
-  actions: { marginTop: 60, gap: 8 },
+  // 버튼 위 여백 = 카드 위 여백 (사용자 조정: Figma 60 → 24)
+  actions: { marginTop: 24, gap: 8 },
 });

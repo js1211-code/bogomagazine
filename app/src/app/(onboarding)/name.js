@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Alert, BackHandler, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BirthdayPickerSheet from '../../components/BirthdayPickerSheet';
 import Button from '../../components/Button';
@@ -8,6 +8,7 @@ import Divider from '../../components/Divider';
 import ScreenHeader from '../../components/ScreenHeader';
 import TextField from '../../components/TextField';
 import { useAuth } from '../../context/AuthContext';
+import { useBackHandler } from '../../hooks/useBackHandler';
 import { colors, typography } from '../../theme';
 
 // Figma 0-2 이름 입력 + 0-2-a 생일 선택 시트 + 0-2-b 나가기 확인 (명세서 PRF-01)
@@ -34,10 +35,7 @@ export default function NameScreen() {
     return true; // 안드로이드 뒤로 가기 버튼의 기본 동작(앱 종료)을 막는다
   }, [hasInput, signOut]);
 
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', requestLeave);
-    return () => sub.remove();
-  }, [requestLeave]);
+  useBackHandler(requestLeave);
 
   const submit = async () => {
     if (!trimmedName || saving) return;

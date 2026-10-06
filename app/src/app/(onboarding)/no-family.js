@@ -1,17 +1,31 @@
 import { router } from 'expo-router';
+import { useCallback } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BrandHeader from '../../components/BrandHeader';
 import Button from '../../components/Button';
 import { FamilyIcon } from '../../components/LineIcons';
+import { useAuth } from '../../context/AuthContext';
+import { useBackHandler } from '../../hooks/useBackHandler';
 import { colors, fonts, hairline, radius } from '../../theme';
 
 // Figma 0-5 가족방 없음 (명세서 ACC-01, FAM-06)
 // '초대를 받았다면'(버튼 없음)과 '가족방을 처음 만든다면'([가족방 만들기])을 같은 무게로 보여 준다.
+// 뒤로 가기(사용자 추가 기능): 처음 화면(로그인)으로 돌아간다 = 로그아웃.
+//   계정은 이미 만들어졌으므로 다시 로그인하면 약관·이름 입력 없이 이 화면으로 온다.
 export default function NoFamilyScreen() {
+  const { signOut } = useAuth();
+
+  useBackHandler(
+    useCallback(() => {
+      signOut();
+      return true;
+    }, [signOut]),
+  );
+
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-      <BrandHeader />
+      <BrandHeader onBack={signOut} backLabel="처음 화면으로" />
       <ScrollView contentContainerStyle={styles.body}>
         <View style={styles.hero}>
           <FamilyIcon />

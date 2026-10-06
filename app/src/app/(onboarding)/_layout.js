@@ -14,7 +14,9 @@ export default function OnboardingLayout() {
       </Stack.Protected>
       <Stack.Protected guard={!needsOnboarding}>
         <Stack.Screen name="no-family" />
-        <Stack.Screen name="create" />
+        {/* 만들기 흐름 전체를 밀어서 닫으면 1/3 의 '입력한 내용이 사라져요' 확인을 건너뛰므로 막는다.
+            (흐름 안의 단계끼리는 밀어서 뒤로 가기가 된다) */}
+        <Stack.Screen name="create" options={{ gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>
   );

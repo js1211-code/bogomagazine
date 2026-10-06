@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
-import { BackHandler, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Button from '../../../components/Button';
 import CheckboxRow from '../../../components/CheckboxRow';
@@ -12,6 +12,7 @@ import SegmentedControl from '../../../components/SegmentedControl';
 import StepHeader from '../../../components/StepHeader';
 import TextField from '../../../components/TextField';
 import { isPersonComplete, recipientsOf, useCreateFamilyDraft } from '../../../context/CreateFamilyDraft';
+import { useBackHandler } from '../../../hooks/useBackHandler';
 import { colors, fonts, typography } from '../../../theme';
 import { honorificFor, RELATIONSHIPS, withJosa } from '../../../utils/honorific';
 
@@ -55,10 +56,7 @@ export default function RecipientScreen() {
     return true;
   }, [hasInput]);
 
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', requestLeave);
-    return () => sub.remove();
-  }, [requestLeave]);
+  useBackHandler(requestLeave);
 
   const next = () => {
     if (goesToOtherPerson) {
