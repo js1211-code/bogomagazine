@@ -1,7 +1,7 @@
 // 1단계: 실제 카카오/애플 로그인 대신 mock 으로 통과시킨다.
 // 2단계에서 이 파일 안의 함수만 실제 SDK + 서버 호출로 바꾸면 된다.
 // 화면과 AuthContext 는 이 파일 함수의 반환값 모양만 알고 있다.
-import { getOrCreateAccount, setCurrentProvider } from '../mocks/mockStore';
+import { ALWAYS_NEW_USER, getCurrentProvider, getOrCreateAccount, resetAccount, setCurrentProvider } from '../mocks/mockStore';
 
 // 최초 가입인데 필수 동의가 빠졌을 때 (서버: 422, 명세서 ACC-03)
 export class ConsentRequiredError extends Error {
@@ -31,5 +31,7 @@ export async function signIn(provider, consent) {
 
 export async function signOut() {
   // TODO(2단계): 서버 로그아웃(/auth/logout) + 저장된 토큰 삭제
+  // 개발용: 가입 절차를 매번 다시 보기 위해 로그아웃하면 계정을 지운다 (mockStore 의 ALWAYS_NEW_USER)
+  if (ALWAYS_NEW_USER) resetAccount(getCurrentProvider());
   setCurrentProvider(null);
 }

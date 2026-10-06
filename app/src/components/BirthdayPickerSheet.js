@@ -5,6 +5,7 @@ import BottomSheet, { SheetActions } from './BottomSheet';
 import Button from './Button';
 
 // 월·일 선택 시트 (Figma 0-2-a). 연도는 받지 않으므로 2월은 29일까지 고를 수 있다.
+// Figma 의 '월과 일만 받아요.' 설명과 '선택한 생일 · ○월 ○일' 줄은 뺐다 (사용자 조정).
 const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const ITEM_HEIGHT = 48;
 const ITEM_GAP = 8;
@@ -79,7 +80,6 @@ export default function BirthdayPickerSheet({ visible, onClose, onSelect, initia
   return (
     <BottomSheet visible={visible} onClose={onClose} title="생일을 알려 주세요">
       <View style={styles.content}>
-        <Text style={styles.subtitle}>월과 일만 받아요.</Text>
         <View style={styles.wheels}>
           <Wheel
             key={`m${openCount}`}
@@ -97,7 +97,6 @@ export default function BirthdayPickerSheet({ visible, onClose, onSelect, initia
             onChange={(i) => setDay(i + 1)}
           />
         </View>
-        <Text style={styles.summary}>{`선택한 생일 · ${month}월 ${safeDay}일`}</Text>
       </View>
       <SheetActions>
         <Button title="선택" onPress={() => onSelect({ month, day: safeDay })} />
@@ -108,7 +107,6 @@ export default function BirthdayPickerSheet({ visible, onClose, onSelect, initia
 
 const styles = StyleSheet.create({
   content: { gap: 16 },
-  subtitle: { ...typography.bodySmall, color: colors.text.secondary },
   wheels: { flexDirection: 'row', gap: 12 },
   column: { flex: 1, alignItems: 'stretch', gap: 8 },
   columnLabel: { ...typography.caption, fontFamily: fonts.medium, color: colors.text.secondary, textAlign: 'center' },
@@ -123,5 +121,4 @@ const styles = StyleSheet.create({
   itemSelected: { backgroundColor: colors.surface.accent },
   itemText: { fontFamily: fonts.regular, fontSize: 17, color: colors.text.disabled },
   itemTextSelected: { fontFamily: fonts.bold, fontSize: 20, color: colors.text.primary },
-  summary: { ...typography.label, color: colors.action.primary },
 });

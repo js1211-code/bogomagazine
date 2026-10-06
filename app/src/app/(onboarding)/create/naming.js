@@ -65,12 +65,12 @@ export default function NamingScreen() {
         <ScrollView style={styles.flex} contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           <Text style={styles.title}>{'가족방과 신문에\n이름을 붙여 주세요'}</Text>
           <View style={styles.fields}>
-            {/* FAM-02: 기본값 없음. 회색 예시는 기본값이 아니다 */}
+            {/* FAM-02: 기본값 없음. 회색 예시는 기본값이 아니다. 예시 문구는 사용자 조정(명세서 예시 → ○○이네) */}
             <TextField
               label="가족방 이름 · 필수"
               value={draft.groupName}
               onChangeText={(groupName) => update({ groupName })}
-              placeholder="미자 여사네, 최가네 삼남매, 문경 지부 핫라인"
+              placeholder="○○이네"
               helper="앱에서 우리 가족을 부르는 이름이에요. 신문에는 실리지 않아요."
             />
             <Divider />

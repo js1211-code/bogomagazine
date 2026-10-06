@@ -59,7 +59,7 @@ export default function DoneScreen() {
       <BrandHeader />
       <ScrollView contentContainerStyle={styles.body}>
         <View style={styles.intro}>
-          <Text style={styles.title}>{'✓ 가족방을\n만들었어요'}</Text>
+          <Text style={styles.title}>✓ 가족방을 만들었어요</Text>
           <Text style={styles.subtitle}>{`${groupName}에 가족을 초대해 일상을 함께 모아 보세요.`}</Text>
         </View>
 
