@@ -10,15 +10,20 @@ import { fontSources } from '../theme';
 SplashScreen.preventAutoHideAsync();
 
 function RootStack() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, needsOnboarding } = useAuth();
 
-  // guard 가 false 인 화면은 접근이 막히고, 로그인 상태가 바뀌면 자동으로 이동한다.
+  // guard 가 false 인 화면은 접근이 막히고, 상태가 바뀌면 자동으로 이동한다.
+  //  로그인 전 → login / 로그인했지만 가입 절차 중 → (onboarding) / 끝났으면 → (tabs)
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Protected guard={!isLoggedIn}>
         <Stack.Screen name="login" />
+        <Stack.Screen name="terms-detail" />
       </Stack.Protected>
-      <Stack.Protected guard={isLoggedIn}>
+      <Stack.Protected guard={needsOnboarding}>
+        <Stack.Screen name="(onboarding)" />
+      </Stack.Protected>
+      <Stack.Protected guard={isLoggedIn && !needsOnboarding}>
         <Stack.Screen name="(tabs)" />
       </Stack.Protected>
     </Stack>
