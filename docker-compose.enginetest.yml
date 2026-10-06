@@ -1,0 +1,21 @@
+# 조판 엔진 테스트 전용 환경. JDK 설치 없이 `docker compose -f docker-compose.enginetest.yml run --rm test` 한 줄로 돌린다.
+# - DB 테스트용 docker-compose.dbtest.yml(Postgres, 5433)과는 별개이며 DB를 쓰지 않는다
+# - 저장소를 /app 에 마운트하므로 testdata/private/ 에 둔 로컬 전용 샘플도 그대로 읽는다 (커밋 금지, testdata/README.md)
+# - Gradle 캐시는 이름 있는 볼륨에 둬서 두 번째 실행부터 의존성을 다시 받지 않는다
+# - 이미지 태그는 고정한다 (latest 금지: 도구가 몰래 바뀌는 사고 방지)
+name: bogomagazine-enginetest
+
+services:
+  test:
+    image: eclipse-temurin:21.0.5_11-jdk
+    working_dir: /app
+    volumes:
+      - .:/app
+      - gradle-cache:/gradle-cache
+    environment:
+      GRADLE_USER_HOME: /gradle-cache
+    # sh 로 실행하므로 gradlew 의 실행 권한이 없어도(Windows에서 만든 체크아웃) 동작한다
+    command: ["sh", "./gradlew", "test", "--no-daemon", "--console=plain"]
+
+volumes:
+  gradle-cache:

@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "algorithm_version": "0.1.0",
+  "seed": 7,
+
+  "issue": { "id": "issue-edge", "number": 3, "period": { "start": "2026-10-19", "end": "2026-11-01" } },
+
+  "newspaper": {
+    "title": "우리 가족 소식지 가상판",
+    "recipient": { "name": "김가상", "type": "COUPLE", "character": "c02" }
+  },
+
+  "layout": {
+    "trim_mm": [210, 297],
+    "margin_mm": 15,
+    "bleed_mm": 3,
+    "min_body_pt": 12,
+    "target_dpi": 300,
+    "page_multiple": 4,
+    "page_range": [4, 16],
+    "fonts": []
+  },
+
+  "posts": [
+    {
+      "id": "pano", "posted_at": "2026-10-20T09:00:00+09:00", "visibility": "ALL",
+      "author": { "label": "외할머니의 막내 사촌 동생 김가상 님", "character": "c20" },
+      "body": "아주 넓은 파노라마 사진입니다. 중요한 부분이 가로로 길게 퍼져 있어서 슬롯 비율로 자르면 양옆이 잘릴 수 있어요.",
+      "media": [
+        { "id": "m-pano", "key": "posts/pano/m-pano/original.jpg", "width": 8000, "height": 1500,
+          "focal_point": { "x": 0.5, "y": 0.5 }, "saliency": [{ "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6 }] }
+      ]
+    },
+    {
+      "id": "tall", "posted_at": "2026-10-20T10:00:00+09:00", "visibility": "ALL",
+      "author": { "label": "손자 가상", "character": "c04" },
+      "body": "세로 사진.",
+      "media": [
+        { "id": "m-tall", "key": "posts/tall/m-tall/original.jpg", "width": 3000, "height": 4500,
+          "focal_point": { "x": 0.5, "y": 0.3 }, "saliency": [{ "x": 0.3, "y": 0.15, "w": 0.4, "h": 0.3 }] }
+      ]
+    },
+    {
+      "id": "lowres", "posted_at": "2026-10-20T11:00:00+09:00", "visibility": "RECIPIENT_ONLY",
+      "author": { "label": "딸 가영", "character": "c05" },
+      "body": "메신저로 받은 작은 사진이에요. 해상도가 모자라도 자동으로 빼지 않고 경고만 남아야 합니다.",
+      "media": [
+        { "id": "m-low", "key": "posts/lowres/m-low/original.jpg", "width": 800, "height": 600,
+          "focal_point": { "x": 0.5, "y": 0.5 }, "saliency": [] }
+      ]
+    },
+    {
+      "id": "long", "posted_at": "2026-10-20T12:00:00+09:00", "visibility": "ALL",
+      "author": { "label": "아들 가준", "character": "c11" },
+      "body": "가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 끝.",
+      "media": []
+    }
+  ],
+
+  "question_corners": [
+    {
+      "order": 1,
+      "question": { "id": "q-edge", "corner_name": "가장 기억에 남는 여행", "print_body": "가장 기억에 남는 여행지는 어디인가요?" },
+      "answers": [
+        {
+          "id": "a-opt", "posted_at": "2026-10-20T13:00:00+09:00", "visibility": "RECIPIENT_ONLY",
+          "author": { "label": "손녀 가은", "character": "c03" },
+          "option": "제주도", "body": "작년 겨울에 같이 갔던 곳이 제일 좋았어요.", "media": [],
+          "comments": [
+            { "id": "c-a", "posted_at": "2026-10-20T13:10:00+09:00",
+              "author": { "label": "딸 가영", "character": "c05" }, "body": "또 가요" },
+            { "id": "c-b", "posted_at": "2026-10-20T13:20:00+09:00",
+              "author": { "label": "아들 가준", "character": "c11" }, "body": "나도 가고 싶다" }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 2,
+      "question": { "id": "q-empty", "corner_name": "요즘 이야기", "print_body": "요즘 즐겨 보시는 프로그램은?" },
+      "answers": []
+    }
+  ],
+
+  "birthday_notices": [
+    { "label": "손자 가상", "character": "c04", "month": 11, "day": 3 }
+  ],
+  "exclusions": []
+}

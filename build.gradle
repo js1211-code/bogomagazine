@@ -11,6 +11,7 @@ repositories {
 dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
@@ -21,4 +22,6 @@ tasks.withType(JavaCompile).configureEach {
 
 test {
     useJUnitPlatform()
+    // testdata/private 의 로컬 샘플이 바뀌면 캐시된 결과를 쓰지 않고 다시 돌린다 (폴더가 없어도 된다)
+    inputs.files(fileTree('testdata'))
 }

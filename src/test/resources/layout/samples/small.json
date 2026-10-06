@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "algorithm_version": "0.1.0",
+  "seed": 1894467310,
+
+  "issue": { "id": "issue-2", "number": 2, "period": { "start": "2026-10-05", "end": "2026-10-18" } },
+
+  "newspaper": {
+    "title": "보고잡지",
+    "recipient": { "name": "홍판서", "type": "SINGLE", "character": "c07" }
+  },
+
+  "layout": {
+    "trim_mm": [210, 297],
+    "margin_mm": 15,
+    "bleed_mm": 3,
+    "min_body_pt": 12,
+    "target_dpi": 300,
+    "page_multiple": 4,
+    "page_range": [4, 16],
+    "fonts": []
+  },
+
+  "posts": [
+    {
+      "id": "p1", "posted_at": "2026-10-07T19:30:00+09:00", "visibility": "ALL",
+      "author": { "label": "손녀 보민", "character": "c03" },
+      "body": "오늘 할머니 생신 케이크 앞에서 한 컷!",
+      "media": [
+        { "id": "m1", "key": "posts/p1/m1/original.jpg", "width": 4032, "height": 3024,
+          "focal_point": { "x": 0.5, "y": 0.4 }, "saliency": [{ "x": 0.3, "y": 0.2, "w": 0.4, "h": 0.5 }] }
+      ]
+    },
+    {
+      "id": "p2", "posted_at": "2026-10-07T19:40:00+09:00", "visibility": "RECIPIENT_ONLY",
+      "author": { "label": "딸 은정", "character": "c05" },
+      "body": "엄마, 사실은 병원에 다녀왔어요.",
+      "media": [
+        { "id": "m2", "key": "posts/p2/m2/original.jpg", "width": 4032, "height": 3024,
+          "focal_point": { "x": 0.5, "y": 0.4 }, "saliency": [{ "x": 0.3, "y": 0.2, "w": 0.4, "h": 0.5 }] },
+        { "id": "m3", "key": "posts/p2/m3/original.jpg", "width": 4032, "height": 3024,
+          "focal_point": { "x": 0.5, "y": 0.4 }, "saliency": [{ "x": 0.3, "y": 0.2, "w": 0.4, "h": 0.5 }] }
+      ]
+    },
+    {
+      "id": "p3", "posted_at": "2026-10-07T19:50:00+09:00", "visibility": "ALL",
+      "author": { "label": "아들 민수", "character": "c11" },
+      "body": "다음 주말에 내려갈게요.",
+      "media": []
+    }
+  ],
+
+  "question_corners": [
+    {
+      "order": 1,
+      "question": { "id": "q1", "corner_name": "어린 시절 이야기", "print_body": "할머니께서 어릴 적 즐겨 하신 놀이는 무엇인가요?" },
+      "answers": [
+        {
+          "id": "a1", "posted_at": "2026-10-07T20:00:00+09:00", "visibility": "ALL",
+          "author": { "label": "손녀 보민", "character": "c03" },
+          "option": null, "body": "공기놀이요", "media": [],
+          "comments": [
+            { "id": "c1", "posted_at": "2026-10-07T20:10:00+09:00",
+              "author": { "label": "딸 은정", "character": "c05" }, "body": "저도 궁금했어요" }
+          ]
+        },
+        {
+          "id": "a2", "posted_at": "2026-10-07T20:05:00+09:00", "visibility": "RECIPIENT_ONLY",
+          "author": { "label": "아들 민수", "character": "c11" },
+          "option": null, "body": "고무줄놀이도 하셨대요",
+          "media": [
+            { "id": "m4", "key": "answers/a2/m4/original.jpg", "width": 4032, "height": 3024,
+              "focal_point": { "x": 0.5, "y": 0.4 }, "saliency": [{ "x": 0.3, "y": 0.2, "w": 0.4, "h": 0.5 }] }
+          ],
+          "comments": []
+        }
+      ]
+    },
+    {
+      "order": 2,
+      "question": { "id": "q2", "corner_name": "요즘 이야기", "print_body": "요즘 즐겨 드시는 간식은?" },
+      "answers": []
+    }
+  ],
+
+  "birthday_notices": [],
+  "exclusions": []
+}

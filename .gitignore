@@ -58,3 +58,6 @@ Thumbs.db
 tmp/
 node_modules/
 __pycache__/
+
+# 실제 사진/가족 데이터로 로컬에서만 돌려 보는 입력 (커밋 금지, testdata/README.md)
+testdata/private/

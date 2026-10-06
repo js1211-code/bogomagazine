@@ -6,10 +6,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.bogomagazine.modules.layout.api.ComposeInput.*;
 import com.bogomagazine.modules.layout.api.ComposeOutput.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -198,6 +204,31 @@ abstract class LayoutEngineContract {
     void 생일_안내_입력은_받아도_실패하지_않는다() {
         var in = with(small(), b -> b.birthdays(List.of(new BirthdayNotice("손자 민준", "c02", 10, 21))));
         assertClean(in, compose(in));
+    }
+
+    // --- 샘플 입력 파일 ---------------------------------------------------------------------
+
+    /**
+     * src/test/resources/layout/samples/*.json (커밋되는 가짜 데이터)과 testdata/private/*.json
+     * (로컬 전용, 커밋 금지, 없으면 건너뜀)를 읽어 파일마다 불변 조건을 검사한다.
+     * 실패 메시지에는 파일 이름과 요소 id만 나오고 본문·이름은 찍지 않는다.
+     */
+    @TestFactory
+    Stream<DynamicTest> 샘플_입력_파일은_불변_조건을_지킨다() throws Exception {
+        var files = new ArrayList<Path>();
+        files.addAll(jsonFiles(Path.of(getClass().getResource("/layout/samples").toURI())));
+        files.addAll(jsonFiles(Path.of("testdata", "private")));
+        return files.stream().map(f -> DynamicTest.dynamicTest(f.getFileName().toString(), () -> {
+            var in = InputJson.read(f);
+            assertClean(in, compose(in));
+        }));
+    }
+
+    private static List<Path> jsonFiles(Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) return List.of();
+        try (var s = Files.list(dir)) {
+            return s.filter(p -> p.toString().endsWith(".json")).sorted().toList();
+        }
     }
 
     // --- 실패 ------------------------------------------------------------------------------
