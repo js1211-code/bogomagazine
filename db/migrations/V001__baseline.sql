@@ -21,9 +21,9 @@ CREATE TABLE app_user (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     email       text,                  -- 카카오: 동의 안 하면 NULL / 애플: 릴레이 주소일 수 있음
     name        text,                  -- 애플은 최초 로그인 때만 제공 -> 없을 수 있음
-    -- 프로필(PRF-01). 사진은 받지 않는다(1005 결정) - photo_key는 당분간 미사용(캐릭터 PRF-05로 대체 예정, 설계 미확정이라 컬럼은 아직 안 둠).
+    -- 프로필(PRF-01). 사진은 받지 않는다(1005 결정) - 앱 아바타·지면 표기는 캐릭터(PRF-05)로 대체 예정이나
+    -- 설계가 아직 확정 전이라 컬럼은 없다(확정되면 추가).
     -- 생일은 월·일만, 선택 입력. 지면 생일 안내(NEWS-07, 마감일부터 30일 이내)에 쓴다
-    photo_key   text,
     birth_month int CHECK (birth_month BETWEEN 1 AND 12),
     birth_day   int CHECK (birth_day BETWEEN 1 AND 31),
     -- 가입 동의(ACC-03). 개인정보/약관은 가입 시 필수, 연구활용은 선택이라 NULL 허용.

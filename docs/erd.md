@@ -153,7 +153,6 @@ erDiagram
         uuid id PK
         text email
         text name
-        text photo_key
         int birth_month
         int birth_day
         timestamptz privacy_consented_at
@@ -947,7 +946,7 @@ erDiagram
 
 | 모듈 | 테이블 | 컬럼 수 | 설명 |
 |---|---|---|---|
-| identity | `app_user` | 12 | 사용자. 프로필(사진·생일)과 가입 동의 기록(ACC-03) 포함. 탈퇴하면 익명화하고 행은 유지한다 |
+| identity | `app_user` | 11 | 사용자. 프로필(사진·생일)과 가입 동의 기록(ACC-03) 포함. 탈퇴하면 익명화하고 행은 유지한다 |
 | identity | `auth_identity` | 10 | 로그인 수단(카카오/애플). (provider, provider_uid)로 식별 |
 | identity | `device` | 7 | 푸시 알림용 디바이스 토큰(Expo). 발행완료/마감 임박 등에 쓴다 |
 | identity | `user_block` | 3 | 개인 차단(SAFE-02). 차단한 사람의 콘텐츠를 숨긴다 |
