@@ -454,6 +454,65 @@ BEGIN
 END $$;
 ROLLBACK;
 
+\echo T129 사진 업로드 유예(POST-07, 1004 결정): 마감 전에 시작한 업로드는 마감 후 14분까지 받고, 마감 후에 시작했거나 사진이 없으면 거부된다
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_issue uuid; v_post uuid;
+BEGIN
+  INSERT INTO issue (group_id, title, period_start, period_end, close_at, template_id,
+                     min_photos, max_photos, min_pages, max_pages, page_multiple)
+  VALUES (g, 'grace', '2020-01-01', '2020-01-31', now() - interval '5 minutes',
+          '00000000-0000-0000-0000-0000000000a1', 1, 10, 8, 40, 4) RETURNING id INTO v_issue;
+  INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u2, '마감 직전 글', '2020-01-20 12:00+09') RETURNING id INTO v_post;
+  PERFORM change_issue_status(v_issue, 'closing', NULL, 'T129 마감');
+
+  -- 마감 전에 시작한 업로드(initiated_at <= close_at)는 마감 후 14분 안에는 등록된다
+  BEGIN
+    INSERT INTO media (post_id, group_id, storage_key, sha256, width, height, initiated_at)
+    VALUES (v_post, g, 'grace-ok.jpg', 'graceok', 100, 100, now() - interval '6 minutes');
+  EXCEPTION WHEN check_violation THEN
+    RAISE EXCEPTION 'T129 failed: 마감 전에 시작한 업로드가 유예(14분) 안에서도 거부됨';
+  END;
+
+  -- 마감 후에 시작한 업로드는 유예 대상이 아니다
+  BEGIN
+    INSERT INTO media (post_id, group_id, storage_key, sha256, width, height, initiated_at)
+    VALUES (v_post, g, 'grace-late-start.jpg', 'gracelatestart', 100, 100, now() - interval '1 minute');
+    RAISE EXCEPTION 'T129 failed: 마감 후 시작한 업로드가 유예됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  -- 사진이 없는 글 수정은 유예가 없다(하드컷)
+  BEGIN
+    PERFORM update_post(v_post, u2, '마감 후 수정');
+    RAISE EXCEPTION 'T129 failed: 사진 없는 수정이 마감 후에도 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
+\echo T129b 사진 업로드 유예 시간(14분)이 지나면 마감 전에 시작한 업로드도 거부된다
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_issue uuid; v_post uuid;
+BEGIN
+  INSERT INTO issue (group_id, title, period_start, period_end, close_at, template_id,
+                     min_photos, max_photos, min_pages, max_pages, page_multiple)
+  VALUES (g, 'grace-expired', '2020-02-01', '2020-02-28', now() - interval '20 minutes',
+          '00000000-0000-0000-0000-0000000000a1', 1, 10, 8, 40, 4) RETURNING id INTO v_issue;
+  INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u2, '마감 직전 글', '2020-02-20 12:00+09') RETURNING id INTO v_post;
+  PERFORM change_issue_status(v_issue, 'closing', NULL, 'T129b 마감');
+
+  BEGIN
+    INSERT INTO media (post_id, group_id, storage_key, sha256, width, height, initiated_at)
+    VALUES (v_post, g, 'grace-expired.jpg', 'graceexpired', 100, 100, now() - interval '25 minutes');
+    RAISE EXCEPTION 'T129b failed: 유예(14분)가 지났는데 등록됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
 \echo T60 hamming64: bit_count 구현이 문자열 방식과 항상 같음
 DO $$ BEGIN
   ASSERT (SELECT count(*) FROM (

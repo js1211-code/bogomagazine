@@ -28,7 +28,7 @@ flowchart LR
     issues -->|"1 FK"| groups
     issues -->|"1 FK"| admin
     feed -->|"3 FK"| identity
-    feed -->|"2 FK"| groups
+    feed -->|"3 FK"| groups
     feed -->|"4 FK"| issues
     feed -->|"1 FK"| admin
     layout -->|"3 FK"| templates
@@ -80,7 +80,8 @@ erDiagram
     "media" ||--o{ "media_rendition" : "media_id (cascade)"
     "print_job" ||--o{ "newsletter_view_log" : "print_job_id"
     "app_user" ||--o{ "newsletter_view_log" : "user_id"
-    "issue" |o--o{ "notification_log" : "issue_id"
+    "family_group" ||--o{ "notification_log" : "group_id"
+    "issue" |o--o{ "notification_log" : "issue_id, group_id"
     "question" |o--o{ "notification_log" : "question_id"
     "app_user" ||--o{ "notification_log" : "user_id"
     "app_user" |o--o{ "override" : "author_id"
@@ -332,6 +333,7 @@ erDiagram
     "family_group" ||--o{ "family_member" : "group_id (cascade)"
     "app_user" ||--o{ "family_member" : "user_id"
     "family_group" ||--o{ "issue" : "group_id"
+    "family_group" ||--o{ "notification_log" : "group_id"
     "family_group" ||--o{ "post" : "group_id (cascade)"
     "family_member" ||--o{ "post" : "group_id, author_id"
     "delivery_address" |o--o{ "print_order" : "delivery_address_id (set null)"
@@ -377,7 +379,7 @@ erDiagram
     }
     "family_invite" {
         uuid id PK
-        uuid group_id FK
+        uuid group_id FK, UK
         uuid created_by FK
         text token_hash UK
         timestamptz created_at
@@ -395,6 +397,10 @@ erDiagram
     }
     "issue" {
         uuid id PK
+        uuid group_id FK
+    }
+    "notification_log" {
+        bigint id PK
         uuid group_id FK
     }
     "operator" {
@@ -426,7 +432,7 @@ erDiagram
     "issue" ||--o{ "issue_status_history" : "issue_id (cascade)"
     "operator" |o--o{ "issue_status_history" : "operator_id"
     "issue" ||--o{ "layout_run" : "issue_id (cascade)"
-    "issue" |o--o{ "notification_log" : "issue_id"
+    "issue" |o--o{ "notification_log" : "issue_id, group_id"
     "issue" ||--o{ "override" : "issue_id (cascade)"
     "issue" ||--o{ "print_job" : "issue_id"
     "issue" ||--o{ "text_block" : "issue_id, group_id (cascade)"
@@ -486,6 +492,7 @@ erDiagram
     }
     "notification_log" {
         bigint id PK
+        uuid group_id FK
         uuid issue_id FK
     }
     "operator" {
@@ -523,7 +530,8 @@ erDiagram
     "question" ||--o{ "issue_question" : "question_id"
     "post" ||--o{ "media" : "post_id, group_id (cascade)"
     "media" ||--o{ "media_rendition" : "media_id (cascade)"
-    "issue" |o--o{ "notification_log" : "issue_id"
+    "family_group" ||--o{ "notification_log" : "group_id"
+    "issue" |o--o{ "notification_log" : "issue_id, group_id"
     "question" |o--o{ "notification_log" : "question_id"
     "app_user" ||--o{ "notification_log" : "user_id"
     "media" |o--o{ "placement" : "media_id"
@@ -571,6 +579,7 @@ erDiagram
         int height
         jsonb exif
         timestamptz taken_at
+        timestamptz initiated_at
         text color_profile
         jsonb focal_point
         jsonb saliency
@@ -592,9 +601,11 @@ erDiagram
     "notification_log" {
         bigint id PK
         uuid user_id FK
+        uuid group_id FK
         uuid issue_id FK
         uuid question_id FK
         text kind
+        timestamptz read_at
         timestamptz sent_at
     }
     "post" {
@@ -943,7 +954,7 @@ erDiagram
 | groups | `delivery_address_access_log` | 5 | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01) |
 | groups | `family_block` | 4 | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가 |
 | groups | `family_group` | 8 | 가족 그룹. 방장(owner_id), 신문 제호(newsletter_title, FAM-03)와 마감 정책(마감일, 타임존, 미달 시 자동 미발행) |
-| groups | `family_invite` | 5 | 카카오톡 초대 링크(토큰 해시). 영구 링크, 방장만 만든다(FAM-05) |
+| groups | `family_invite` | 5 | 카카오톡 초대 링크(토큰 해시). 영구 링크, 가족마다 1개, 방장만 만든다(FAM-05, 1004 결정) |
 | groups | `family_member` | 6 | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다 |
 | issues | `issue` | 18 | 월간 호. 그 달의 게시물을 모아 만든 결과물. 상태는 change_issue_status()로만 바꾼다 |
 | issues | `issue_status_history` | 8 | 호 상태 변경 이력. changed_by(가족) 또는 operator_id(운영자) 중 하나만 채워짐, 둘 다 NULL이면 배치가 자동 변경 |
@@ -952,9 +963,9 @@ erDiagram
 | feed | `comment` | 6 | 질문 답변 댓글(QST-06), 1뎁스 |
 | feed | `issue_media` | 6 | 호별 사진 선별 결과(후보/선택/제외와 점수). 마감할 때 만들어진다 |
 | feed | `issue_question` | 4 | 호에 공개된 질문(호당 2개, display_order). 공개 시각은 NOTI-01 이 참조 |
-| feed | `media` | 19 | 게시물의 사진. 이미지 분석 결과와 사용자의 의도(꼭 넣기/빼기) |
+| feed | `media` | 20 | 게시물의 사진. 이미지 분석 결과와 사용자의 의도(꼭 넣기/빼기). initiated_at(업로드 시작)은 마감 유예(POST-07)에 쓴다 |
 | feed | `media_rendition` | 5 | 사진의 파생본(썸네일/미리보기/인쇄용) |
-| feed | `notification_log` | 6 | 알림 발송 이력(질문 공개/마감 리마인더/발송완료, NOTI-01~05, M-10). question 을 참조해서 issues 가 아니라 feed 소속 |
+| feed | `notification_log` | 8 | 알림 발송 이력 + 읽음 표시(NOTI-01~06, M-10). 60일 보관 후 자동 삭제(O-33). question 을 참조해서 issues 가 아니라 feed 소속 |
 | feed | `post` | 11 | 피드 게시물(글) 또는 질문 답변(question_id). 호와 독립이고 posted_at 으로 어느 호에 실릴지 정해진다 |
 | feed | `question` | 9 | 질문카드 풀. MVP는 팀이 작성한 고정 풀(QST-02) |
 | feed | `report` | 9 | 콘텐츠 신고(SAFE-01). 운영자가 확인·조치(ADM-05) |

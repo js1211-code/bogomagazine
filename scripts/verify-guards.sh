@@ -76,10 +76,13 @@ check "사진 삭제 마감잠금 제거"    "FN|delete_media(uuid,uuid)|PERFORM
 check "댓글 수정 본인확인 제거"    "FN|update_comment(uuid,uuid,text)|IF p_actor <> v_author THEN|IF false THEN" db/tests/feed.sql "T128 failed"
 check "댓글 삭제 본인확인 제거"    "FN|delete_comment(uuid,uuid)|IF p_actor <> v_author THEN|IF false THEN" db/tests/feed.sql "T128 failed"
 check "댓글 삭제 마감잠금 제거"    "FN|delete_comment(uuid,uuid)|PERFORM assert_period_open(v_group, v_ts);|PERFORM 1;" db/tests/feed.sql "T128 failed"
+check "사진 업로드 유예 제거(POST-07)" "FN|assert_period_open(uuid,timestamptz,timestamptz)|IF p_upload_started_at IS NOT NULL AND p_upload_started_at <= v_close_at AND now() <= v_close_at + interval '14 minutes' THEN|IF false THEN" db/tests/feed.sql "T129 failed"
+check "유예 시간 제한(14분) 제거(POST-07)" "FN|assert_period_open(uuid,timestamptz,timestamptz)|now() <= v_close_at + interval '14 minutes'|true" db/tests/feed.sql "T129b failed"
 
 # --- 그룹 / 초대 / 방장 권한 / 차단 / 수신자 ---
 check "방장 구성원 외래키 제거"    "ALTER TABLE family_group DROP CONSTRAINT family_group_owner_member_fkey"  db/tests/groups.sql       "T20 failed"
 check "초대 생성자(방장) 확인 제거" "DROP TRIGGER trg_invite_creator ON family_invite"                        db/tests/groups.sql       "T21 failed"
+check "가족마다 초대 코드 1개 제약 제거(FAM-05)" "ALTER TABLE family_invite DROP CONSTRAINT family_invite_group_id_key" db/tests/groups.sql "T21 failed"
 check "차단된 사람 재합류 거부 제거" "FN|accept_family_invite(text,uuid,timestamptz)|EXISTS (SELECT 1 FROM family_block WHERE group_id = v.group_id AND user_id = p_user)|false" db/tests/groups.sql "T24 failed"
 check "내보내기 권한 확인 제거"    "CREATE OR REPLACE FUNCTION remove_family_member(p_group uuid, p_actor uuid, p_target uuid) RETURNS void LANGUAGE sql AS 'UPDATE family_member SET left_at = now() WHERE group_id = p_group AND user_id = p_target AND left_at IS NULL'" db/tests/groups.sql "T24 failed"
 check "내보내면 차단 등록 무력화(FAM-09)" "FN|remove_family_member(uuid,uuid,uuid)|INSERT INTO family_block (group_id, user_id, created_by) VALUES (p_group, p_target, p_actor)|PERFORM 1" db/tests/groups.sql "차단 목록에 등록"
@@ -90,6 +93,7 @@ check "수신자 성별 필수 체크 제거" "ALTER TABLE delivery_address DROP
 check "수신자 관계(호칭) 체크 제거" "ALTER TABLE family_member DROP CONSTRAINT family_member_relationship_check" db/tests/groups.sql     "T04b"
 check "혼자뿐인 방장 탈퇴 거부 제거" "FN|anonymize_user(uuid)|IF v_successor IS NULL THEN|IF false THEN" db/tests/identity.sql "T81 failed"
 check "방장 자동 이전 제거"        "FN|anonymize_user(uuid)|UPDATE family_group SET owner_id = v_successor WHERE id = v_group;|PERFORM 1;" db/tests/identity.sql "T81 failed"
+check "방장 이전 알림 누락(FAM-11/NOTI-06)" "FN|anonymize_user(uuid)|INSERT INTO notification_log (user_id, group_id, kind) VALUES (v_successor, v_group, 'owner_changed');|PERFORM 1;" db/tests/identity.sql "owner_changed 가 남아야 함"
 check "로그인 수단 제한 제거"      "ALTER TABLE auth_identity DROP CONSTRAINT auth_identity_provider_check"   db/tests/identity.sql     "T82 failed"
 check "개인 차단 자기차단 체크 제거" "ALTER TABLE user_block DROP CONSTRAINT user_block_check"                 db/tests/identity.sql     "T83 failed"
 check "개인 차단 자동신고 제거"    "DROP TRIGGER trg_user_block_auto_report ON user_block"                    db/tests/identity.sql     "T83 failed"
@@ -109,6 +113,7 @@ check "발송완료 자동 알림 무력화(NOTI-03)" "FN|change_issue_status(uu
 # --- 참조 정합성(db/tests/integrity.sql): 복합 외래키와 트리거를 하나씩 약화/제거 ---
 check "사진-글 복합 FK 제거"          "ALTER TABLE media DROP CONSTRAINT media_post_id_group_id_fkey, ADD FOREIGN KEY (post_id) REFERENCES post(id) ON DELETE CASCADE" db/tests/integrity.sql "T100 failed"
 check "텍스트-글 복합 FK 제거"        "ALTER TABLE text_block DROP CONSTRAINT text_block_post_id_group_id_fkey, ADD FOREIGN KEY (post_id) REFERENCES post(id) ON DELETE SET NULL" db/tests/integrity.sql "T101 failed"
+check "알림-호 복합 FK 제거"          "ALTER TABLE notification_log DROP CONSTRAINT notification_log_issue_id_group_id_fkey" db/tests/integrity.sql "T117 failed"
 check "텍스트-호 복합 FK 제거"        "ALTER TABLE text_block DROP CONSTRAINT text_block_issue_id_group_id_fkey, ADD FOREIGN KEY (issue_id) REFERENCES issue(id) ON DELETE CASCADE" db/tests/integrity.sql "T101 failed"
 check "호별 선별-사진 복합 FK 제거"   "ALTER TABLE issue_media DROP CONSTRAINT issue_media_media_id_group_id_fkey, ADD FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE" db/tests/integrity.sql "T102 failed"
 check "호별 선별-호 복합 FK 제거"     "ALTER TABLE issue_media DROP CONSTRAINT issue_media_issue_id_group_id_fkey, ADD FOREIGN KEY (issue_id) REFERENCES issue(id) ON DELETE CASCADE" db/tests/integrity.sql "T102 failed"

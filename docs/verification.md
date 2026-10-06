@@ -15,7 +15,7 @@
 | 확인하고 싶은 것 | 명령 | 기대 결과 |
 |---|---|---|
 | 규칙이 코드대로 동작한다 | `./scripts/db.sh test` | `ALL DB TESTS PASSED` |
-| **테스트가 정말 문제를 잡는다** (테스트의 테스트) | `./scripts/verify-guards.sh` | 보호 장치 66개를 하나씩 빼고, 모두 해당 테스트가 실패해야 `모든 변이를 테스트가 잡았다` |
+| **테스트가 정말 문제를 잡는다** (테스트의 테스트) | `./scripts/verify-guards.sh` | 보호 장치 71개를 하나씩 빼고, 모두 해당 테스트가 실패해야 `모든 변이를 테스트가 잡았다` |
 | **함수/뷰 수준 모듈 의존**(외래키로 안 보이는 결합) | `./scripts/db.sh up && ./scripts/db.sh migrate` 후 `PYTHONUTF8=1 python3 scripts/analysis/fn-deps.py` | 모듈 간 의존 목록. `architecture.md`의 "알려진 예외" 표와 일치해야 하고, 표에 없는 줄이 나오면 문서화하거나 함수를 옮긴다 |
 | 글 올리기/마감, 워커 중복 수령이 **동시에 움직여도** 안전하다 | `./scripts/repro/concurrency.sh` | 글 올리기는 마감이 끝날 때까지 기다렸다 거부되고, 워커 둘은 서로 막히지 않고 다른 호를 받음. (초대 링크는 사용 횟수 제한이 없어져 경쟁 조건 자체가 없음) |
 | `CREATE INDEX CONCURRENTLY`가 Flyway 기본 설정에서 **멈춘다** | `./scripts/repro/flyway-concurrent-index.sh` | 기본값은 30초 안에 끝나지 않고(`timeout`), 우리 설정은 정상 적용 |
@@ -43,6 +43,7 @@
 | 방장이 아닌 사람이 초대/내보내기 | T21, T24 (`db/tests/groups.sql`) |
 | 다른 그룹의 사진/배송지가 섞임 | T100~T102, T107, T109 (`db/tests/integrity.sql`) |
 | 나간 구성원이 글/수정/주문 | T53, T103, T105, T109 |
+| `notification_log.issue_id`에 단독 FK와 복합 FK가 중복(1004 반영 때 복합 FK로 바꾸며 예전 단독 FK 제거를 잊음, 리뷰에서 발견) | T117 (`integrity.sql`) |
 
 `verify-guards.sh`는 이 테스트들이 "통과만 하는 가짜"가 아님을 확인한다.
 
@@ -93,8 +94,8 @@ git reset -q && rm zz_fake.txt
 | 호 상태 정의 일관성 | CHECK 제약 / 전이표 / `collecting`에서의 도달 가능성 비교 | 모두 일치, 끝점은 `archived`뿐 |
 | 중복·불필요 인덱스 | 완전 중복 + 다른 인덱스의 앞부분인 것. 쿼리 자체도 일부러 만든 중복으로 검증 | 없음 |
 | 반복 마이그레이션 순서 의존 | 9개 파일을 **역순/무작위 순서**로 적용한 뒤 전체 테스트, 이미 적용된 DB에 2번 재적용 (2026-10-02, 재설계 후 다시 실행) | 전부 통과 (순서에 의존하지 않음) |
-| 테스트가 호출하지 않는 함수 | `track_functions=all`로 전체 테스트 실행 후 `pg_stat_user_functions` | 함수 43개 중 42개 호출됨, 나머지 1개(`guard_post_period_update`)는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명 (분기 커버리지는 미측정, 2026-10-04 재측정) |
-| 함수/뷰 수준 모듈 의존 | `scripts/analysis/fn-deps.py` | 문서의 예외 표와 대부분 일치 (기능명세서_최종_1002 반영 후 재실행, 2026-10-04: 함수 43개·뷰 2개). `issues.change_issue_status()→feed.enqueue_published_notifications()`, `layout.fail_compose_job()`/`feed.alert_on_report()→admin.operator_alert_log`는 테이블에 직접 쓰는 것이라 이 도구(함수 호출만 추적)는 못 잡는다 — architecture.md의 "알려진 예외" 표에 수동으로 기록해 둠 |
+| 테스트가 호출하지 않는 함수 | `track_functions=all`로 전체 테스트 실행 후 `pg_stat_user_functions` | 2026-10-03 기준 함수 43개 중 42개 호출됨, 나머지 1개(`guard_post_period_update`)는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명 (분기 커버리지는 미측정). 1004 반영으로 2개 추가(총 45개) — `get_or_create_family_invite()`는 groups.sql T21, `delete_old_notifications()`는 issues.sql T125b가 호출하나 `track_functions` 재측정은 다음에 |
+| 함수/뷰 수준 모듈 의존 | `scripts/analysis/fn-deps.py` | 문서의 예외 표와 대부분 일치 (기능명세서_최종_1002 반영 후 재실행, 2026-10-04: 함수 43개·뷰 2개. 1004 반영으로 함수 45개가 됐으나 재실행 전). `issues.change_issue_status()→feed.enqueue_published_notifications()`, `layout.fail_compose_job()`/`feed.alert_on_report()→admin.operator_alert_log`, `identity.anonymize_user()→feed.notification_log`(owner_changed)는 테이블에 직접 쓰는 것이라 이 도구(함수 호출만 추적)는 못 잡는다 — architecture.md의 "알려진 예외" 표에 수동으로 기록해 둠 |
 | 삭제 동작 | 실제로 지워 보기 | **결함 발견**: 조판 결과가 있는 호는 삭제 실패 → 배치 외래키를 커밋 시점 검사로 수정, T04b/T04c로 고정 |
 | 의존성이 깨지는 방식 | 컬럼 삭제/이름 변경을 직접 시도 | 뷰가 쓰는 컬럼은 DB가 삭제를 막음. **함수 본문이 쓰는 컬럼은 이름을 바꿔도 마이그레이션이 성공**하고 테스트에서만 실패 |
 
@@ -106,7 +107,7 @@ git reset -q && rm zz_fake.txt
 | 실제로 어긋난 값이 들어가는가 | 호 A/B를 만들어 엇갈리게 연결해 보기 17건 | 보강 전: **16건 허용**(막힌 것은 승인의 호 불일치 1건뿐). 보강 후: 14건 거부 + 의도적으로 허용한 3건(`T112`~`T114`) |
 | 정상 데이터까지 막지 않는가 | 같은 시나리오의 일관된 입력 | 모두 허용 (T100~T111의 양성 대조) |
 | 복합 키에서 연쇄 동작이 유지되는가 | 글 삭제 시 텍스트 `SET NULL (post_id)`·사진 `CASCADE`, 조판 삭제 시 `CASCADE`, 배치된 사진의 글은 삭제 거부 | 정상 (T114~T116) |
-| 새 보호 장치가 정말 막는가 | `verify-guards.sh` (기능명세서_최종_1002 반영 후 66항목으로 다시 작성, 2026-10-04) | 이전 버전(58항목, 2026-10-03)은 전부 잡힘을 확인함. 이번에 추가/변경한 항목은 항목마다 DB를 새로 만들어 수 분 걸려서 **끝까지 재실행해 확인하지 못함** — `db.sh test`(개별 테스트 전체 통과)로는 확인했지만, "테스트가 가짜가 아닌지"까지는 다음에 `./scripts/verify-guards.sh`를 끝까지 돌려서 마저 확인해야 함 |
+| 새 보호 장치가 정말 막는가 | `verify-guards.sh` (기능명세서_1004 반영 후 70항목으로 다시 작성, 2026-10-04) | 66항목(2026-10-04 이전)은 전부 잡힘을 확인함. 이번에 추가한 4항목(사진 업로드 유예/유예시간/초대 코드 1개/방장이전 알림)은 `db.sh test` 전체 통과로 확인했고, 그중 가장 까다로운 것(유예 조건 제거)은 실제로 변이를 적용해 `FN|...` 치환 문자열이 배포된 함수 본문과 정확히 일치하고 의도한 메시지로 실패하는 것까지 직접 확인함. 나머지 3항목은 **`verify-guards.sh`를 끝까지 돌려서 재확인 전** |
 | 기존 기능이 깨지지 않았나 | 기존 테스트 전체 | 2곳이 실패했고 둘 다 **테스트가 일관되지 않은 데이터**를 쓰던 것(그룹 밖 사용자를 호 참여자로, 참여자가 아닌 사용자가 사진 업로드)이라 코드가 아닌 테스트를 고침 |
 
 ## 이 검증의 한계

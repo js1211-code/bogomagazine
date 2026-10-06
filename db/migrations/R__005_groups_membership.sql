@@ -44,6 +44,19 @@ DROP TRIGGER IF EXISTS trg_invite_creator ON family_invite;
 CREATE TRIGGER trg_invite_creator BEFORE INSERT ON family_invite
     FOR EACH ROW EXECUTE FUNCTION guard_invite_creator();
 
+-- 가족마다 고정 초대 코드 1개(FAM-05, 1004 결정): 이미 있으면 그 링크를 그대로 돌려주고 새로 만들지 않는다.
+CREATE OR REPLACE FUNCTION get_or_create_family_invite(p_group uuid, p_actor uuid, p_token_hash text)
+RETURNS family_invite
+LANGUAGE plpgsql AS $$
+DECLARE v family_invite%ROWTYPE;
+BEGIN
+    SELECT * INTO v FROM family_invite WHERE group_id = p_group;
+    IF FOUND THEN RETURN v; END IF;
+    INSERT INTO family_invite (group_id, created_by, token_hash) VALUES (p_group, p_actor, p_token_hash)
+    RETURNING * INTO v;
+    RETURN v;
+END $$;
+
 -- 차단 목록(family_block)도 방장만 등록할 수 있다 (FAM-09/10)
 CREATE OR REPLACE FUNCTION guard_family_block_creator() RETURNS trigger
 LANGUAGE plpgsql AS $$

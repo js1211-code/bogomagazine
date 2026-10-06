@@ -2,14 +2,7 @@
 
 ## 보류 중 (설계안까지 있고 구현만 남음)
 
-### 1. 마감 시각 강제 + 업로드 유예
-- 지금: DB는 `close_at` 시각 자체를 강제하지 않는다. 배치가 호를 닫기 전까지 업로드를 받는다 (앱이 먼저 확인해야 함).
-- 안: `media`에 `initiated_at`(업로드 시작)과 `upload_status`(pending/complete)를 추가한다. 시작은 `close_at`까지, 완료는 `close_at + 유예`까지 허용한다.
-  대용량 업로드가 마감 직전에 시작해 직후에 끝나도 버려지지 않게 하려는 것이다. 마감 배치도 `close_at + 유예` 이후에 처리한다.
-- 같이: `family_group.upload_grace`(기본 10분), 현재 시각을 `app_now()`로 감싸 테스트에서 고정 가능하게.
-- 정할 것: 유예 시간, 업로드를 "시작/완료"로 나눌지.
-
-### 2. DB 권한 분리
+### 1. DB 권한 분리
 - 지금: `issue.status` 직접 변경 차단은 세션 플래그라 우회 가능한 가드레일이다.
 - 안: 앱 접속 역할에서 `issue.status` 컬럼 `UPDATE` 권한을 회수하고 `change_issue_status()`를 `SECURITY DEFINER`(+`search_path` 고정)로 만든다.
   역할: 앱(읽기/쓰기), 마감 배치, 조판 워커, 조회 API(뷰만 읽기). 필요하면 조회 역할에 행 수준 보안(RLS)으로 가족 그룹 간 격리.
@@ -17,10 +10,13 @@
   `FORCE ROW LEVEL SECURITY`를 걸어도 무조건 통과한다(실제로 막혔다 다시 확인함). RLS가 먹히려면 superuser가 아닌 별도 앱 전용 DB 계정이 먼저 있어야 한다.
 - 정할 것: 배포 환경과 역할 구성. (환경이 정해진 뒤에 한다)
 
-### 3. 마감 임박 알림
-- 안: `notification` 발송 대기열 테이블(`UNIQUE (user_id, issue_id, kind)`로 중복 방지). 마감 배치가 `enqueue_deadline_reminders()`로 "3일 전/1일 전" 알림을 넣고, 발송 워커가 `SKIP LOCKED`로 처리한다.
-  푸시 토큰(`device`)과 수신 설정도 필요하다. 대상은 이번 달 기간에 아직 글을 올리지 않은 활동 중인 구성원(`v_issue_progress`의 제출 기준과 같은 조건).
-- 정할 것: 채널(푸시/이메일 등), 시점.
+### 2. 마감 임박 알림 발송 + 알림 목록(NOTI-06) 정리 배치
+- 지금 있는 것: 대기열 테이블(`notification_log`, `UNIQUE (user_id, issue_id/question_id, kind)`로 중복 방지)과 적재 함수
+  (`enqueue_question_published_notifications()`/`enqueue_deadline_reminders()`/`enqueue_published_notifications()`/`delete_old_notifications()`)는 다 있다.
+  `enqueue_published_notifications()`만 `change_issue_status()`가 자동 호출하고, 나머지 세 개는 **아직 스케줄러가 호출하지 않는다.**
+- 안: 마감 배치 또는 별도 주기 작업이 `enqueue_deadline_reminders()`("3일 전/1일 전")와 `delete_old_notifications()`(하루 한 번, 60일 보관 O-33)를 호출하고,
+  발송 워커가 `notification_log`를 `SKIP LOCKED`로 읽어 푸시로 보낸다. 푸시 토큰(`device`)과 수신 설정도 필요하다.
+- 정할 것: 채널(푸시/이메일 등), 마감 리마인더 시점.
 
 ## 결정 대기 (정책)
 
@@ -40,13 +36,13 @@
 - [ ] 운영 DB 마이그레이션 절차 (백업, 승인, 적용 시점)
 - [ ] `main` 브랜치 보호, `CODEOWNERS` ([workflow.md](docs/workflow.md) 끝부분)
 - [ ] 이미지 분석/PDF 렌더 워커
-- [ ] `verify-guards.sh`(변이 검사, 66항목)를 CI에 정기(주 1회/수동) 실행으로 추가 — 항목마다 DB를 새로 만들어 몇 분 걸림, 테스트가 통과만 하는 가짜가 되는 것을 막는다 ([verification.md](docs/verification.md))
+- [ ] `verify-guards.sh`(변이 검사, 70항목)를 CI에 정기(주 1회/수동) 실행으로 추가 — 항목마다 DB를 새로 만들어 몇 분 걸림, 테스트가 통과만 하는 가짜가 되는 것을 막는다 ([verification.md](docs/verification.md))
 - [ ] CI에 `shellcheck` + `actionlint` 추가 (지금 저장소에서 둘 다 통과 확인됨. 비용 작고 사고를 일찍 잡는다)
 - [ ] 첫 운영 데이터가 생기면 CI에 `squawk`(PostgreSQL 마이그레이션 안전성 린터)를 **새로 추가된 V 파일에만** 적용. baseline에는 소음 118건, 규칙 조정 필요
 - [ ] 앱 코드가 생기면 모듈 경계 검사(ArchUnit 등가물)를 CI 필수 검사로 추가 ([architecture.md](docs/architecture.md))
 - [ ] **plpgsql 정적 검사(`plpgsql_check` 등) 도입 검토**: 함수 본문은 PostgreSQL이 검사·추적하지 않아, 컬럼 이름을 바꿔도 마이그레이션은 성공하고 테스트에서만 걸린다(재현 확인). 기본 postgres 이미지에는 없어 별도 이미지가 필요하다 (미검증)
 - [ ] 함수 수준 모듈 의존 분석(`scripts/analysis/fn-deps.py`)을 CI 검사로: 새 역방향 의존이 생기면 실패하게 (지금은 사람이 실행)
-- [ ] 함수 분기 커버리지 측정 (지금은 "호출됐는가"만 확인: 43개 중 42개 호출 횟수로 확인, 나머지 1개는 변이 검사로 확인)
+- [ ] 함수 분기 커버리지 측정 (지금은 "호출됐는가"만 확인: 2026-10-03 기준 43개 중 42개 호출 횟수로 확인, 나머지 1개는 변이 검사로 확인. 1004 반영분 2개는 테스트에서 호출은 되나 `track_functions` 재측정 전)
 - [ ] CD 설계 — **앱 언어와 호스팅이 정해진 뒤.** 착수 전에 이미 정해진 원칙: forward-only 마이그레이션, 앱 배포와 별개 단계로 마이그레이션 실행(+백업, 운영은 수동 승인),
       운영에도 `FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK=false` 적용([ADR-0002](docs/adr/0002-db-migrations.md)), 배포 중 구버전/신버전 앱이 같은 DB를 함께 쓸 수 있게 변경(컬럼 추가 → 앱 전환 → 옛 컬럼 제거)
 
@@ -55,6 +51,7 @@
 - [ ] **인쇄 주문 권한**: 지금은 활동 중인 구성원 누구나 주문할 수 있다. 비용이 드는 행동이라 방장만으로 좁힐지 정한다 (결제 설계와 함께).
 - [ ] **초대 취소/방장 전용 쓰기를 DB가 강제하지 못하는 부분**: `p_actor`를 믿는 함수들은 앱이 정직하다는 전제다. DB 롤 분리(위 "DB 권한 분리") 때 직접 UPDATE/DELETE 권한을 회수해야 완성된다.
 - [ ] 배치 `slot_id`가 템플릿 마스터에 있는지는 DB가 못 보므로 조판 알고리즘 출력 검증으로 (알고리즘 구현 시)
+- [ ] **마감 유예(POST-07) 중 도착한 사진의 재선별**: `close_due_issues()`가 `select_media()`를 호출한 뒤에(상태가 이미 closing으로 바뀐 뒤에) 유예 시간(14분) 안에 도착한 사진은 `media` 행은 만들어지지만 그 호의 `issue_media` 선별에는 자동으로 반영되지 않는다. 운영자가 조판 검수(review) 중 수동으로 재조판해야 포함된다 — 자동화할지 결정 필요.
 
 ## 결정 기록 (일부러 하지 않기로 한 것)
 

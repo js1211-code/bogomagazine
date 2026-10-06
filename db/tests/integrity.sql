@@ -285,4 +285,16 @@ BEGIN
   ASSERT (SELECT count(*) FROM preview WHERE run_id = v_run) = 0, 'T116 preview';
 END $$;
 
+\echo T117 알림: issue_id가 있으면 그 호와 같은 group_id여야 한다 (단독 FK는 없고 복합 외래키 하나로만 검사)
+DO $$ BEGIN
+  BEGIN
+    INSERT INTO notification_log (user_id, group_id, issue_id, kind) VALUES (pg_temp.fx('u3'), pg_temp.fx('g2'), pg_temp.fx('a'), 'published');
+    RAISE EXCEPTION 'T117 failed: 다른 그룹의 호를 가리키는 알림이 허용됨';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  INSERT INTO notification_log (user_id, group_id, issue_id, kind) VALUES (pg_temp.fx('u1'), pg_temp.fx('g1'), pg_temp.fx('a'), 'published');
+  -- issue_id가 없으면(owner_changed 등) group_id만으로 충분하다
+  INSERT INTO notification_log (user_id, group_id, kind) VALUES (pg_temp.fx('u1'), pg_temp.fx('g1'), 'owner_changed');
+END $$;
+
 ROLLBACK;
