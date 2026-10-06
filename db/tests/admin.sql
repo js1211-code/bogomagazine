@@ -88,6 +88,7 @@ DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         a constant uuid := '00000000-0000-0000-0000-0000000000c1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         v_post uuid; v_report uuid; r record; v_before int;
+        v_t timestamptz := '2026-10-01 00:20:00+09';  -- 마감(00:00) + 20분: +15분 조건을 이미 만족
 BEGIN
   INSERT INTO post (group_id, author_id, body, posted_at) VALUES (g, u1, '글', now()) RETURNING id INTO v_post;
   INSERT INTO report (reporter_id, target_type, target_id, reason) VALUES (u1, 'post', v_post, '사유') RETURNING id INTO v_report;
@@ -97,8 +98,9 @@ BEGIN
   SELECT count(*) INTO v_before FROM operator_alert_log WHERE kind = 'layout_failed' AND ref_id = a;
   PERFORM change_issue_status(a, 'closing');
   FOR i IN 1..3 LOOP
-    SELECT * INTO r FROM claim_compose_job('w1', '0.1.0');
-    PERFORM fail_compose_job(r.o_run_id, 'w1', '실패 ' || i);
+    SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_t);
+    PERFORM fail_compose_job(r.o_run_id, 'w1', 'render_failed', '실패 ' || i, v_t);
+    v_t := v_t + interval '10 minutes';  -- 1분/5분 재시도 대기를 넉넉히 지나도록
     IF i < 3 THEN
       ASSERT (SELECT count(*) FROM operator_alert_log WHERE kind = 'layout_failed' AND ref_id = a) = v_before,
              format('T205 %s번째 실패에서는 아직 알림이 없어야 함', i);

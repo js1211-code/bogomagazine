@@ -64,14 +64,16 @@ DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
         v1 family_invite%ROWTYPE; v2 family_invite%ROWTYPE;
 BEGIN
-  INSERT INTO family_invite (group_id, created_by, token_hash)
-  VALUES (g, u1, repeat('a', 64));
+  -- 방장이 아직 아무 링크도 안 만든 상태에서 먼저 검사해야 한다: 방장이 먼저 만들면 가족당 1개 제약과
+  -- 동시에 걸려서(unique_violation), 생성자 확인(trg_invite_creator)이 빠져도 다른 이유로 거부된 것처럼 보인다
   BEGIN
     INSERT INTO family_invite (group_id, created_by, token_hash)
     VALUES (g, u2, repeat('b', 64));
     RAISE EXCEPTION 'T21 failed: 일반 구성원이 초대를 만듦';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
+  INSERT INTO family_invite (group_id, created_by, token_hash)
+  VALUES (g, u1, repeat('a', 64));
   BEGIN
     INSERT INTO family_invite (group_id, created_by, token_hash)
     VALUES (g, u1, 'short');
@@ -196,48 +198,139 @@ DO $$
 DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u1 constant uuid := '00000000-0000-0000-0000-000000000001';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_addr uuid;
 BEGIN
-  INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-  VALUES (g, '고모 댁', '김가상', 'female', '00002', pgp_sym_encrypt('대전광역시 가상구 1', 'dev-only-change-me'), u2);
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (g, '고모 댁', '00002', pgp_sym_encrypt('대전광역시 가상구 1', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
 
   BEGIN
-    INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-    VALUES (g, '외부', '누구', 'female', '00003', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), gen_random_uuid());
+    INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+    VALUES (g, '외부', '00003', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), gen_random_uuid());
     RAISE EXCEPTION 'T26 failed: 외부인이 배송지를 등록함';
   EXCEPTION WHEN check_violation THEN NULL; END;
 
   PERFORM remove_family_member(g, u1, u2);
   BEGIN
-    INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-    VALUES (g, '나간 사람', '누구', 'female', '00003', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), u2);
+    INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+    VALUES (g, '나간 사람', '00003', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), u2);
     RAISE EXCEPTION 'T26 failed: 나간 구성원이 배송지를 등록함';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 ROLLBACK;
 
-\echo T26b 수신자(RCV-01): 1인 수신자는 성별 필수, 부부 수신은 성별 없이도 등록 가능, 잘못된 성별 값은 거부
+\echo T26b 수신자(RCV-01, 1005 결정): 1인/부부 모두 성별 필수, 잘못된 성별 값 거부, 인원수가 recipient_type과 다르면 커밋 시점에 거부
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_addr uuid;
+BEGIN
+  -- 1인 수신자: 정상
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (g, '할머니 댁', '00005', pgp_sym_encrypt('성별 있음', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
+
+  BEGIN
+    INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 2, '잘못된 성별', '제3성별');
+    RAISE EXCEPTION 'T26b failed: 잘못된 성별 값이 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  -- 부부 수신: 두 분 다 입력해야 정상
+  INSERT INTO delivery_address (group_id, label, recipient_type, postal_code, address_line1, created_by)
+  VALUES (g, '할머니·할아버지 댁', 'couple', '00006', pgp_sym_encrypt('부부', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 2, '김가상2', 'male');
+END $$;
+ROLLBACK;
+
+\echo T26c 수신자 인원수(1005 결정): 부부인데 한 분만 등록되면 거부, 1인인데 두 분 등록돼도 거부, 아예 하나도 안 넣어도 거부
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_addr uuid;
+BEGIN
+  INSERT INTO delivery_address (group_id, label, recipient_type, postal_code, address_line1, created_by)
+  VALUES (g, '할머니·할아버지 댁', 'couple', '00006', pgp_sym_encrypt('부부', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
+  BEGIN
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'T26c failed: 부부인데 한 명만 등록됐는데 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_addr uuid;
+BEGIN
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (g, '할머니 댁', '00005', pgp_sym_encrypt('1인', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 2, '김가상2', 'male');
+  BEGIN
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'T26c failed: 1인 수신자인데 두 명이 등록됐는데 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
 BEGIN;
 DO $$
 DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
         u2 constant uuid := '00000000-0000-0000-0000-000000000002';
 BEGIN
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (g, '할머니 댁', '00005', pgp_sym_encrypt('수신자 없음', 'dev-only-change-me'), u2);
   BEGIN
-    INSERT INTO delivery_address (group_id, label, recipient_name, postal_code, address_line1, created_by)
-    VALUES (g, '할머니 댁', '김가상', '00005', pgp_sym_encrypt('성별 없음', 'dev-only-change-me'), u2);
-    RAISE EXCEPTION 'T26b failed: 1인 수신자가 성별 없이 등록됨';
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'T26c failed: 수신자를 하나도 안 넣었는데 허용됨';
   EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
 
-  INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-  VALUES (g, '할머니 댁', '김가상', 'female', '00005', pgp_sym_encrypt('성별 있음', 'dev-only-change-me'), u2);
-
-  -- 부부 수신은 성별 없이도 등록 가능
-  INSERT INTO delivery_address (group_id, label, recipient_name, recipient_type, postal_code, address_line1, created_by)
-  VALUES (g, '할머니·할아버지 댁', '김가상', 'couple', '00006', pgp_sym_encrypt('부부', 'dev-only-change-me'), u2);
+-- 아래 두 케이스는 위와 달리 "이미 정상 상태인 배송지"를 나중에 건드리는 시나리오라, 두 트리거 중
+-- 하나만 켜져 있어도 걸러지는 게 아니라 각 트리거가 담당하는 경로를 따로 검증한다.
+-- SET CONSTRAINTS ALL IMMEDIATE로 "지금까지는 정상"임을 먼저 확정한 뒤(여기서 안 걸림), 그 다음
+-- 한 문장만 바꿔서 그 문장을 책임지는 트리거만 단독으로 잡아내는지 확인한다 (COMMIT은 쓰지 않음 - 롤백으로 격리 유지).
+\echo T26d 기존 배송지의 recipient_type만 바꾸고 수신자 수를 안 맞추면 거부 (delivery_address 쪽 트리거)
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_addr uuid;
+BEGIN
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (g, '할머니 댁', '00005', pgp_sym_encrypt('1인', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
+  SET CONSTRAINTS ALL IMMEDIATE;  -- 지금까지는 정상(1인에 1명) - 여기서 예외 없어야 함. 이후 검사는 이 트랜잭션 끝까지 즉시 수행됨
 
   BEGIN
-    INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-    VALUES (g, '댁', '이름', '제3성별', '00007', pgp_sym_encrypt('잘못된 성별', 'dev-only-change-me'), u2);
-    RAISE EXCEPTION 'T26b failed: 잘못된 성별 값이 허용됨';
+    UPDATE delivery_address SET recipient_type = 'couple' WHERE id = v_addr;  -- recipient는 여전히 1행뿐 -> 트리거가 즉시 발동
+    RAISE EXCEPTION 'T26d failed: 타입만 부부로 바꿨는데 허용됨';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+
+\echo T26e 기존 부부 배송지에서 수신자 한 명을 지우면 거부 (recipient 쪽 트리거)
+BEGIN;
+DO $$
+DECLARE g constant uuid := '00000000-0000-0000-0000-0000000000d1';
+        u2 constant uuid := '00000000-0000-0000-0000-000000000002';
+        v_addr uuid;
+BEGIN
+  INSERT INTO delivery_address (group_id, label, recipient_type, postal_code, address_line1, created_by)
+  VALUES (g, '할머니·할아버지 댁(e)', 'couple', '00006', pgp_sym_encrypt('부부', 'dev-only-change-me'), u2) RETURNING id INTO v_addr;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 1, '김가상', 'female');
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr, 2, '김가상2', 'male');
+  SET CONSTRAINTS ALL IMMEDIATE;  -- 지금까지는 정상(부부에 2명) - 여기서 예외 없어야 함
+
+  BEGIN
+    DELETE FROM recipient WHERE delivery_address_id = v_addr AND display_order = 2;  -- recipient_type은 여전히 couple -> 트리거가 즉시 발동
+    RAISE EXCEPTION 'T26e failed: 부부인데 한 명을 지웠는데 허용됨';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 ROLLBACK;
@@ -250,8 +343,8 @@ BEGIN
   INSERT INTO app_user (id, name) VALUES (u3, '셋째');
   g := create_family_group('임시', u3);
   INSERT INTO family_invite (group_id, created_by, token_hash) VALUES (g, u3, repeat('a', 64));
-  INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-  VALUES (g, '댁', '이름', 'female', '00004', pgp_sym_encrypt('주소', 'dev-only-change-me'), u3);
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (g, '댁', '00004', pgp_sym_encrypt('주소', 'dev-only-change-me'), u3);
   DELETE FROM family_group WHERE id = g;
   ASSERT (SELECT count(*) FROM family_member WHERE group_id = g) = 0
      AND (SELECT count(*) FROM family_invite WHERE group_id = g) = 0

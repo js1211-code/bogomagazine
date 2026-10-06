@@ -68,7 +68,7 @@ BEGIN
               AND (po.posted_at AT TIME ZONE g.timezone)::date BETWEEN i.period_start AND i.period_end);
 
     UPDATE app_user
-       SET email = NULL, name = '탈퇴한 사용자', photo_key = NULL, deleted_at = COALESCE(deleted_at, now())
+       SET email = NULL, name = '탈퇴한 사용자', deleted_at = COALESCE(deleted_at, now())
      WHERE id = p_user;
 END $$;
 

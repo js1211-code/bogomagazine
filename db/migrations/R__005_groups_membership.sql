@@ -87,6 +87,52 @@ DROP TRIGGER IF EXISTS trg_address_creator ON delivery_address;
 CREATE TRIGGER trg_address_creator BEFORE INSERT ON delivery_address
     FOR EACH ROW EXECUTE FUNCTION guard_address_creator();
 
+-- 수신자(recipient) 인원수는 배송지의 recipient_type과 맞아야 한다(1인=1행, 부부=2행, RCV-01/1005 결정).
+-- 두 테이블에 나뉜 같은 사실이 어긋나지 않게 커밋 시점에 검사한다 (배송지 생성 -> 수신자 insert가 같은 트랜잭션의 여러 문장이라 즉시 검사하면 안 됨).
+CREATE OR REPLACE FUNCTION assert_recipient_count(p_addr uuid) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_type     text;
+    v_expected int;
+    v_count    int;
+BEGIN
+    SELECT recipient_type INTO v_type FROM delivery_address WHERE id = p_addr;
+    IF NOT FOUND THEN RETURN; END IF;  -- 배송지 자체가 지워지는 중(CASCADE로 recipient도 함께 지워짐)
+    v_expected := CASE v_type WHEN 'single' THEN 1 ELSE 2 END;
+    SELECT count(*) INTO v_count FROM recipient WHERE delivery_address_id = p_addr;
+    IF v_count <> v_expected THEN
+        RAISE EXCEPTION 'delivery_address %: recipient_type=%(%명 기대)인데 수신자가 %명 등록됨', p_addr, v_type, v_expected, v_count
+            USING ERRCODE = 'check_violation';
+    END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION trg_recipient_count_on_recipient() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM assert_recipient_count(COALESCE(NEW.delivery_address_id, OLD.delivery_address_id));
+    RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_recipient_count ON recipient;
+CREATE CONSTRAINT TRIGGER trg_recipient_count
+    AFTER INSERT OR UPDATE OR DELETE ON recipient
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION trg_recipient_count_on_recipient();
+
+CREATE OR REPLACE FUNCTION trg_recipient_count_on_address() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM assert_recipient_count(NEW.id);
+    RETURN NULL;
+END $$;
+
+-- AFTER INSERT 도 검사 대상 : 배송지만 만들고 수신자를 하나도 안 넣는 경우를 잡기 위해(그러면 recipient 트리거 자체가 안 일어남)
+DROP TRIGGER IF EXISTS trg_address_recipient_count ON delivery_address;
+CREATE CONSTRAINT TRIGGER trg_address_recipient_count
+    AFTER INSERT OR UPDATE OF recipient_type ON delivery_address
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION trg_recipient_count_on_address();
+
 -- 초대 수락: 로그인(카카오/애플)을 마친 사용자가 링크로 들어와 그룹에 합류한다.
 --   p_token_hash 는 링크 토큰의 sha256 hex (토큰 원문은 DB 에 없다). 합류하는 사람은 항상 일반 구성원이다.
 --   링크는 유효기간·횟수 제한·취소가 없는 영구 링크다(FAM-05, V-23).

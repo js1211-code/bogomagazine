@@ -42,7 +42,7 @@
 |---|---|---|---|
 | **identity** | `app_user`, `auth_identity`, `device`, `waitlist_signup`, `user_block` | 사용자, 카카오/애플 로그인 연결, 회원 탈퇴 익명화, 푸시 토큰, 정식 출시 대기 신청(WAIT-01), 개인 차단(SAFE-02) | `V001`, `R__070_identity_privacy` |
 | **admin** | `operator`, `operator_alert_log` | Admin 페이지 운영자 계정(전원 동일 권한, ADM-01), 조판 실패·신고 접수 운영 알림(ADM-08) | `V001` |
-| **groups** | `family_group`, `family_member`(+`relationship`), `family_invite`, `family_block`, `delivery_address`, `delivery_address_access_log` | 가족 그룹(방장 = `owner_id`, 신문 제호 `newsletter_title` 기본값 '보고잡지' FAM-03), 구성원(나가면 `left_at`, 수신자와의 관계), 카카오톡 초대 링크(가족마다 고정 코드 1개, FAM-05, 1004 결정), 방장이 내보낸 계정 차단(FAM-09/10), 조부모님 배송지+수신자 정보(전화번호·주소 암호화), 운영자의 배송지 열람 기록(ADM-01) | `V001`, `R__005_groups_membership` |
+| **groups** | `family_group`, `family_member`(+`relationship`), `family_invite`, `family_block`, `delivery_address`, `recipient`, `delivery_address_access_log` | 가족 그룹(방장 = `owner_id`, 신문 제호 `newsletter_title` 기본값 '보고잡지' FAM-03), 구성원(나가면 `left_at`, 수신자와의 관계), 카카오톡 초대 링크(가족마다 고정 코드 1개, FAM-05, 1004 결정), 방장이 내보낸 계정 차단(FAM-09/10), 조부모님 배송지(전화번호·주소 암호화) + 수신자 1~2명(이름·성별, 1005 결정 — 사진은 안 받음), 운영자의 배송지 열람 기록(ADM-01) | `V001`, `R__005_groups_membership` |
 | **templates** | `template`, `page_master`, `style`, `font` | 불변 버전의 판형/슬롯/스타일/폰트 | `V001` |
 | **issues** | `issue`, `issue_status_history`, `issue_status_transition` | 호의 상태 전이(가족 또는 운영자가 바꿈), 월 마감 배치, 진행상태 조회 | `R__020_issues_lifecycle`, `R__050_issues_batch` |
 | **feed** | `post`, `media`, `media_rendition`, `issue_media`, `text_block`, `question`, `issue_question`, `comment`, `report`, `banned_word`, `notification_log` | 앱 안 피드(글/사진/질문 답변, 호와 독립), 마감 후 게시 가드(사진은 업로드 시작 시각 기준 14분 유예, POST-07 1004 결정), 호별 사진 선별(`issue_media`), 질문카드(QST), 답변 댓글, 콘텐츠 신고(SAFE-01), 금칙어(SAFE-03), 알림 발송 이력 + 읽음 표시/60일 보관(NOTI-01~06, `question`을 참조해서 issues가 아니라 여기 소속) | `R__010_feed_selection`, `R__030_feed_guards` |
@@ -72,7 +72,7 @@
 | 방법 | 대상 |
 |---|---|
 | **복합 외래키** (부모에 `UNIQUE(id, group_id)` 등을 두고 자식이 둘을 함께 참조) | `media` ↔ `post`, `text_block` ↔ `post`/`issue`, `issue_media` ↔ `issue`/`media`(모두 같은 그룹), `post`/`family_invite`/`family_block`/`delivery_address` ↔ `family_member`(그 그룹의 구성원), `override`/`print_job` ↔ `layout_run`(같은 호), `preview` ↔ `page`(존재하는 페이지), `notification_log` ↔ `issue`(issue_id가 있으면 같은 group_id, T117) — `issue_id`에는 이 복합 외래키 하나만 걸려있고 단독 FK는 없다(둘 다 두면 중복) |
-| **트리거** (활동 중인지, 선별되었는지 등 외래키로 못 쓰는 것) | `post`/`comment`(작성자가 활동 중인 구성원, 마감된 기간 거부), `media`(마감된 기간 거부), `family_invite`/`family_block`(방장만), `delivery_address`(활동 중인 구성원), `placement`(그 호에서 선별된 사진/그 호의 텍스트), `override`(가족이면 활동 중인 구성원, 운영자면 통과), `print_order`(같은 그룹의 배송지, 활동 중인 주문자), `comment`(답변(`post.question_id` 있음)에만 허용) |
+| **트리거** (활동 중인지, 선별되었는지 등 외래키로 못 쓰는 것) | `post`/`comment`(작성자가 활동 중인 구성원, 마감된 기간 거부), `media`(마감된 기간 거부), `family_invite`/`family_block`(방장만), `delivery_address`(활동 중인 구성원), `recipient`/`delivery_address`(수신자 인원수가 `recipient_type`과 일치해야 함 — 1인=1행/부부=2행, T26c~T26e), `placement`(그 호에서 선별된 사진/그 호의 텍스트), `override`(가족이면 활동 중인 구성원, 운영자면 통과), `print_order`(같은 그룹의 배송지, 활동 중인 주문자), `comment`(답변(`post.question_id` 있음)에만 허용) |
 
 복합 외래키는 컬럼 중 하나가 NULL 이면 검사를 건너뛴다. 원본 글이 없는 텍스트(제목), 호 전체 승인이 그 경우다.
 **일부러 허용한 것**: 호의 선별(`issue_media`)에 기간 밖의 사진이 들어가는 것(기간은 선별 함수가 지킨다), 조판이 쓴 템플릿이 호의 템플릿과 다른 것(그 시점의 기록), 수정로그의 `target_id`가 사라진 대상을 가리키는 것(다형 로그), 배치의 `slot_id`(템플릿 JSON 안의 이름, 조판 알고리즘 출력에서 검증). 모두 `integrity.sql`에 "허용됨"으로 고정되어 있다.
@@ -125,14 +125,14 @@ DB 롤 분리(앱 롤에는 함수 실행만 허용)는 TODO이며, 그 전까�
 
 ### 함수 수준까지 보면 "계층"이 아니다 (분석으로 확인)
 
-외래키만 보면 위 그림처럼 순환 없는 계층이다. 그러나 함수/뷰 본문까지 파싱해 보면(`scripts/analysis/fn-deps.py`, 함수 45개·뷰 2개, 2026-10-04 재실행)
+외래키만 보면 위 그림처럼 순환 없는 계층이다. 그러나 함수/뷰 본문까지 파싱해 보면(`scripts/analysis/fn-deps.py`, 함수 48개·뷰 2개, 2026-10-04 재실행)
 **`issues`는 `layout`/`review`/`feed`/`printing`과 양방향 결합**이 있다. 외래키는 그쪽이 `issues`를 가리키고, 함수는 `issues`가 그쪽을 읽는다.
 `identity.anonymize_user()`도 groups/review를 건드린다(`groups → identity`는 외래키 방향이라 서로 읽는 쌍이 된다). 위 표가 그 목록이며, 분석 결과와 일치함을 확인했다.
 
 - 의미: **`issues`는 독립적으로 바꾸거나 떼어낼 수 없다.** `layout_run`/`override`/`print_job`/`placement`/`issue_media`/`post`의 컬럼을 바꾸면
   `change_issue_status()`와 `v_issue_progress`가 영향을 받는다.
 - DB가 지켜 주는 것과 아닌 것: **뷰**(`v_issue_progress`)가 쓰는 컬럼은 PostgreSQL이 추적해서 지우려 하면 막는다.
-  **plpgsql 함수 본문**은 추적하지 않아서, 컬럼 이름을 바꿔도 마이그레이션은 성공하고 **테스트에서만** 실패한다(재현 확인). 그래서 모든 함수가 테스트에서 호출되는 것이 중요하다 (`track_functions=all`로 측정, 2026-10-03 기준 43개 중 42개가 호출 횟수로 잡혔고, 나머지 `guard_post_period_update`는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명한다. 1004 반영으로 추가된 `get_or_create_family_invite()`/`delete_old_notifications()`도 각각 groups.sql T21/issues.sql T125b에서 호출되나, 45개 기준 재측정은 다음에. 분기 단위 커버리지는 미측정).
+  **plpgsql 함수 본문**은 추적하지 않아서, 컬럼 이름을 바꿔도 마이그레이션은 성공하고 **테스트에서만** 실패한다(재현 확인). 그래서 모든 함수가 테스트에서 호출되는 것이 중요하다 (`track_functions=all`로 측정, 2026-10-03 기준 43개 중 42개가 호출 횟수로 잡혔고, 나머지 `guard_post_period_update`는 예외만 던지는 경로라 횟수는 0이지만 변이 검사가 실행됨을 증명한다. 1004/1005 반영으로 추가된 5개(`get_or_create_family_invite()`/`delete_old_notifications()`/`assert_recipient_count()`/`trg_recipient_count_on_recipient()`/`trg_recipient_count_on_address()`)도 groups.sql T21/T26c~T26e, issues.sql T125b가 전부 호출하나, 48개 기준 재측정은 다음에. 분기 단위 커버리지는 미측정).
 
 ## 프로세스 구성
 

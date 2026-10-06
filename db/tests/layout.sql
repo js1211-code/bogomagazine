@@ -2,28 +2,58 @@
 -- 각 테스트는 BEGIN..ROLLBACK 으로 격리되어 시드 데이터를 바꾸지 않는다. 하나라도 실패하면 즉시 중단.
 \echo == layout
 
-\echo T47 조판 큐: closing 이면 노출, 조판 진행/완료 또는 실패 3회면 제외
+\echo T47 조판 큐: closing + 마감 15분 지남이면 노출, 조판 진행/완료 또는 실패 3회면 제외
 BEGIN;
 DO $$
 DECLARE v_issue constant uuid := '00000000-0000-0000-0000-0000000000c1'; v_run uuid; k int;
 BEGIN
   ASSERT (SELECT count(*) FROM v_compose_queue) = 0, 'T47 collecting 인데 큐에 있음';
   PERFORM change_issue_status(v_issue, 'closing');
+  -- 시드의 close_at(2026-10-01)은 이 테스트를 실행하는 실제 시각보다 한참 과거라 +15분 조건은 이미 만족한다
   ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 1, 'T47 closing 인데 큐에 없음';
 
   FOR k IN 1..2 LOOP
-    INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
-    VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', k, 'h', 'failed');
+    INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status,
+                            finished_at, attempts)
+    VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', k, 'h', 'failed',
+            now() - interval '1 day', k);
   END LOOP;
-  ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 1, 'T47 실패 2회는 재시도 대상';
-  INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
-  VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 3, 'h', 'failed');
+  ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 1, 'T47 실패 2회는 재시도 대상(대기 시간은 지남)';
+  INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status,
+                          finished_at, attempts)
+  VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 3, 'h', 'failed', now() - interval '1 day', 3);
   ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 0, 'T47 실패 3회인데 큐에 있음';
 
   DELETE FROM layout_run WHERE issue_id = v_issue;
   INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status)
   VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'running');
   ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 0, 'T47 진행 중인데 큐에 있음';
+END $$;
+ROLLBACK;
+
+\echo T47b 조판 큐: 마감 15분 전이면 실패·재시도 대기 중이면 큐에서 빠진다
+BEGIN;
+DO $$
+DECLARE v_issue uuid;
+BEGIN
+  INSERT INTO issue (group_id, title, period_start, period_end, status, close_at, closed_at, template_id,
+                     min_photos, max_photos, min_pages, max_pages, page_multiple)
+  VALUES ('00000000-0000-0000-0000-0000000000d1', 'queue-timing', '2020-03-01', '2020-03-31', 'closing',
+          now() - interval '5 minutes', now() - interval '5 minutes', '00000000-0000-0000-0000-0000000000a1',
+          1, 10, 8, 40, 4) RETURNING id INTO v_issue;
+  ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 0,
+         'T47b 마감 15분 전인데 큐에 있음';
+
+  INSERT INTO issue (group_id, title, period_start, period_end, status, close_at, closed_at, template_id,
+                     min_photos, max_photos, min_pages, max_pages, page_multiple)
+  VALUES ('00000000-0000-0000-0000-0000000000d1', 'queue-backoff', '2020-04-01', '2020-04-30', 'closing',
+          now() - interval '30 minutes', now() - interval '30 minutes', '00000000-0000-0000-0000-0000000000a1',
+          1, 10, 8, 40, 4) RETURNING id INTO v_issue;
+  INSERT INTO layout_run (issue_id, template_id, algorithm_version, seed, input_snapshot_hash, status,
+                          finished_at, attempts)
+  VALUES (v_issue, '00000000-0000-0000-0000-0000000000a1', '0.1.0', 1, 'h', 'failed', now() - interval '30 seconds', 1);
+  ASSERT (SELECT count(*) FROM v_compose_queue WHERE issue_id = v_issue) = 0,
+         'T47b 1회 실패 후 1분 대기 전인데 큐에 있음';
 END $$;
 ROLLBACK;
 
@@ -68,7 +98,7 @@ BEGIN
 END $$;
 ROLLBACK;
 
-\echo T70 워커: claim -> heartbeat -> 페이지 없이 complete 거부 -> 정상 complete 시 review 전환
+\echo T70 워커: claim -> heartbeat -> 페이지 없이 complete 거부 -> 열람 이미지·인쇄 PDF 없이 complete 거부 -> 정상 complete 시 review 전환
 BEGIN;
 DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1'; r record;
@@ -102,6 +132,26 @@ BEGIN
     ASSERT SQLERRM LIKE '%no longer running%', 'T70 메시지: ' || SQLERRM;
   END;
 
+  -- 열람 이미지 체크만 따로 보려고 인쇄 PDF 를 먼저 준비해둔다(아래서 지우고 PDF 체크를 따로 본다) - 안 그러면
+  -- 둘 다 없을 때 어느 쪽 체크가 막았는지 이 테스트가 구분하지 못한다
+  INSERT INTO print_job (issue_id, run_id, override_seq, status) VALUES (v, r.o_run_id, 0, 'ready');
+  BEGIN
+    PERFORM complete_compose_job(r.o_run_id, 'w1', 'hash');
+    RAISE EXCEPTION 'T70 failed: 열람 이미지 없이 complete 됨';
+  EXCEPTION WHEN raise_exception THEN
+    ASSERT SQLERRM LIKE '%열람%준비되지 않음%', 'T70 메시지: ' || SQLERRM;
+  END;
+  INSERT INTO preview (run_id, override_seq, page_no, storage_key, status)
+  VALUES (r.o_run_id, 0, 1, 'preview/1.png', 'done');
+  DELETE FROM print_job WHERE run_id = r.o_run_id;  -- 이제 인쇄 PDF 체크만 따로 본다
+  BEGIN
+    PERFORM complete_compose_job(r.o_run_id, 'w1', 'hash');
+    RAISE EXCEPTION 'T70 failed: 인쇄용 PDF 없이 complete 됨';
+  EXCEPTION WHEN raise_exception THEN
+    ASSERT SQLERRM LIKE '%PDF%준비되지 않음%' , 'T70 메시지: ' || SQLERRM;
+  END;
+  INSERT INTO print_job (issue_id, run_id, override_seq, status) VALUES (v, r.o_run_id, 0, 'ready');
+
   PERFORM complete_compose_job(r.o_run_id, 'w1', 'hash123', 0.8::real, '{"warnings":[]}', 's3://x/input.json');
   ASSERT (SELECT status FROM issue WHERE id = v) = 'review', 'T70 review 전환';
   ASSERT (SELECT status FROM layout_run WHERE id = r.o_run_id) = 'done'
@@ -125,7 +175,7 @@ BEGIN
   ASSERT (SELECT status FROM layout_run WHERE id = r1.o_run_id) = 'failed', 'T71 죽은 작업이 failed 가 아님';
   ASSERT (SELECT run_no FROM layout_run WHERE id = r2.o_run_id) = 2, 'T71 run_no';
   ASSERT NOT heartbeat_compose_job(r1.o_run_id, 'w1'), 'T71 죽었던 워커의 heartbeat 가 통과';
-  ASSERT NOT fail_compose_job(r1.o_run_id, 'w1', 'late'), 'T71 죽었던 워커의 fail 이 통과';
+  ASSERT NOT fail_compose_job(r1.o_run_id, 'w1', 'render_failed', 'late'), 'T71 죽었던 워커의 fail 이 통과';
   INSERT INTO page (run_id, page_no) VALUES (r1.o_run_id, 1);
   BEGIN
     PERFORM complete_compose_job(r1.o_run_id, 'w1', 'h');
@@ -141,10 +191,11 @@ ROLLBACK;
 BEGIN;
 DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1'; r1 record; r2 record;
+        v_reopen_at timestamptz := now() + interval '1 day';
 BEGIN
   PERFORM * FROM close_due_issues('2026-10-01 00:00:01+09');
   SELECT * INTO r1 FROM claim_compose_job('w1', '0.1.0');
-  PERFORM change_issue_status(v, 'collecting', NULL, '재오픈', now() + interval '1 day');
+  PERFORM change_issue_status(v, 'collecting', NULL, '재오픈', v_reopen_at);
   ASSERT NOT heartbeat_compose_job(r1.o_run_id, 'w1'), 'T72 무효가 된 작업의 heartbeat 가 통과';
   INSERT INTO page (run_id, page_no) VALUES (r1.o_run_id, 1);
   BEGIN
@@ -154,43 +205,112 @@ BEGIN
     ASSERT SQLERRM LIKE '%no longer running%', 'T72 메시지: ' || SQLERRM;
   END;
 
-  PERFORM * FROM close_due_issues(now() + interval '2 days');
-  SELECT * INTO r2 FROM claim_compose_job('w1', '0.1.0');
+  PERFORM * FROM close_due_issues(v_reopen_at + interval '2 days');
+  -- 새 close_at(v_reopen_at)의 +15분이 지난 시각을 명시로 줘야 claim 된다(마감 +15분 확정값)
+  SELECT * INTO r2 FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_reopen_at + interval '20 minutes');
   ASSERT r2.o_issue_id = v AND r2.o_attempt = 1, 'T72 새 마감 주기는 시도 1부터';
   ASSERT (SELECT run_no FROM layout_run WHERE id = r2.o_run_id) = 2, 'T72 run_no 는 이어서 증가';
 END $$;
 ROLLBACK;
 
-\echo T73 3번 실패하면 큐에서 빠지고 compose_failed, 운영자가 reset 하면 다시 시도
+\echo T73 3번 실패하면 큐에서 빠지고 compose_failed, 운영자가 reset 하면 다시 시도 (재시도 대기 1분·5분 사이 간격으로 진행)
 BEGIN;
 DO $$
 DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1'; r record; k int;
+        v_t timestamptz := '2026-10-01 00:20:00+09';  -- 마감(00:00) + 20분: +15분 조건을 이미 만족
 BEGIN
   PERFORM * FROM close_due_issues('2026-10-01 00:00:01+09');
   FOR k IN 1..3 LOOP
-    SELECT * INTO r FROM claim_compose_job('w1', '0.1.0');
+    SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_t);
     ASSERT r.o_attempt = k, format('T73 시도 %s 번째 attempt=%s', k, r.o_attempt);
-    ASSERT fail_compose_job(r.o_run_id, 'w1', 'boom'), 'T73 fail 보고';
+    ASSERT fail_compose_job(r.o_run_id, 'w1', 'render_failed', 'boom', v_t), 'T73 fail 보고';
+    v_t := v_t + interval '10 minutes';  -- 1분/5분 대기 조건을 넉넉히 지나도록 다음 시도는 10분 뒤로
   END LOOP;
-  ASSERT (SELECT count(*) FROM claim_compose_job('w1', '0.1.0')) = 0, 'T73 3번 실패 뒤에도 계속 받음';
+  ASSERT (SELECT count(*) FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_t)) = 0,
+         'T73 3번 실패 뒤에도 계속 받음';
   ASSERT (SELECT current_step FROM v_issue_progress WHERE issue_id = v) = 'compose_failed', 'T73 compose_failed 아님';
   ASSERT reset_compose_failures(v) = 3, 'T73 reset 건수';
-  SELECT * INTO r FROM claim_compose_job('w1', '0.1.0');
+  SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_t);
   ASSERT r.o_issue_id = v AND r.o_attempt = 1, 'T73 reset 후 다시 시도 1';
+END $$;
+ROLLBACK;
+
+\echo T73b 재시도 대기(1분·5분)가 지나기 전에는 다시 받지 못한다
+BEGIN;
+DO $$
+DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1'; r record;
+        v_close constant timestamptz := '2026-10-01 00:20:00+09';
+BEGIN
+  PERFORM * FROM close_due_issues('2026-10-01 00:00:01+09');
+  SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close);
+  ASSERT fail_compose_job(r.o_run_id, 'w1', 'render_failed', '1차 실패', v_close), 'T73b 1차 fail';
+
+  ASSERT (SELECT count(*) FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close + interval '30 seconds')) = 0,
+         'T73b 1분 대기 전인데 다시 받음';
+  SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close + interval '90 seconds');
+  ASSERT r.o_attempt = 2, 'T73b 1분 지나면 2번째 시도';
+  ASSERT fail_compose_job(r.o_run_id, 'w1', 'render_failed', '2차 실패', v_close + interval '90 seconds'), 'T73b 2차 fail';
+
+  ASSERT (SELECT count(*) FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close + interval '150 seconds')) = 0,
+         'T73b 2차 실패 뒤 5분 대기 전인데 다시 받음(1분만 지남)';
+  SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close + interval '90 seconds' + interval '5 minutes' + interval '1 second');
+  ASSERT r.o_attempt = 3, 'T73b 5분 지나면 3번째 시도';
+END $$;
+ROLLBACK;
+
+\echo T73c input_invalid/no_content 실패는 대기 없이 바로 운영 알림, 자동 재시도 대상에서 제외
+BEGIN;
+DO $$
+DECLARE v constant uuid := '00000000-0000-0000-0000-0000000000c1'; r record;
+        v_close constant timestamptz := '2026-10-01 00:20:00+09';
+        v_alerts_before int;
+BEGIN
+  PERFORM * FROM close_due_issues('2026-10-01 00:00:01+09');
+  SELECT count(*) INTO v_alerts_before FROM operator_alert_log WHERE ref_id = v;
+  SELECT * INTO r FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close);
+  ASSERT fail_compose_job(r.o_run_id, 'w1', 'no_content', '게시물 0건', v_close), 'T73c no_content fail';
+  ASSERT (SELECT count(*) FROM operator_alert_log WHERE ref_id = v) = v_alerts_before + 1,
+         'T73c 1회만에 운영 알림이 안 남';
+  ASSERT (SELECT count(*) FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_close + interval '1 day')) = 0,
+         'T73c no_content 실패가 하루 뒤에도 재시도 대상에 남음';
 END $$;
 ROLLBACK;
 
 \echo T74 두 호가 마감되면 워커 둘이 서로 다른 호를 받는다
 BEGIN;
 DO $$
-DECLARE v_oct uuid; a record; b record;
+DECLARE v_oct uuid; v_oct_close timestamptz; a record; b record;
 BEGIN
   SELECT o_issue_id INTO v_oct FROM open_monthly_issues('2026-10-02 12:00+09');
   PERFORM change_issue_status(v_oct, 'closing');
+  SELECT close_at INTO v_oct_close FROM issue WHERE id = v_oct;
   PERFORM * FROM close_due_issues('2026-10-01 00:00:01+09');   -- 9월호도 closing
-  SELECT * INTO a FROM claim_compose_job('w1', '0.1.0');
-  SELECT * INTO b FROM claim_compose_job('w2', '0.1.0');
+  -- 9월호(close_at 2026-10-01)는 이미 +15분을 한참 지났고, 10월호는 방금 강제로 closing 시켜
+  -- close_at(다음 달 1일 00:00)이 아직 멀었으므로, 두 호 모두 받을 수 있는 공통 시각을 명시로 준다
+  SELECT * INTO a FROM claim_compose_job('w1', '0.1.0', interval '2 minutes', v_oct_close + interval '20 minutes');
+  SELECT * INTO b FROM claim_compose_job('w2', '0.1.0', interval '2 minutes', v_oct_close + interval '20 minutes');
   ASSERT a.o_issue_id IS NOT NULL AND b.o_issue_id IS NOT NULL AND a.o_issue_id <> b.o_issue_id, 'T74 같은 호를 받음';
-  ASSERT (SELECT count(*) FROM claim_compose_job('w3', '0.1.0')) = 0, 'T74 남은 호가 없는데 받음';
+  ASSERT (SELECT count(*) FROM claim_compose_job('w3', '0.1.0', interval '2 minutes', v_oct_close + interval '20 minutes')) = 0,
+         'T74 남은 호가 없는데 받음';
+END $$;
+ROLLBACK;
+
+\echo T75 조판 시작은 마감 +15분부터: 그 전에는 claim 되지 않는다
+BEGIN;
+DO $$
+DECLARE v_issue uuid;
+BEGIN
+  INSERT INTO issue (group_id, title, period_start, period_end, status, close_at, closed_at, template_id,
+                     min_photos, max_photos, min_pages, max_pages, page_multiple)
+  VALUES ('00000000-0000-0000-0000-0000000000d1', 'start-timing', '2020-05-01', '2020-05-31', 'closing',
+          now() - interval '10 minutes', now() - interval '10 minutes', '00000000-0000-0000-0000-0000000000a1',
+          1, 10, 8, 40, 4) RETURNING id INTO v_issue;
+
+  ASSERT (SELECT count(*) FROM claim_compose_job('w1', '0.1.0')) = 0,
+         'T75 마감 +15분 전인데 claim 됨 (10분 지남, 유예 14분과 겹칠 수 있음)';
+
+  UPDATE issue SET close_at = now() - interval '16 minutes' WHERE id = v_issue;
+  ASSERT (SELECT o_issue_id FROM claim_compose_job('w1', '0.1.0')) = v_issue,
+         'T75 마감 +15분이 지났는데 claim 안 됨';
 END $$;
 ROLLBACK;
