@@ -3,7 +3,8 @@ import { colors, fonts, radius, typography } from '../theme';
 
 // 약관 한 줄: 체크박스 + 이름 + (선택) '보기' 링크
 // emphasis: 굵은 글씨(전체 동의, 필수 항목) / 보통 글씨(선택 항목)
-export default function CheckboxRow({ label, checked, onToggle, onView, emphasis = true }) {
+// compact: 글씨 14 (받는 분 정보 동의 줄처럼 화면 안에 들어가는 동의 줄)
+export default function CheckboxRow({ label, checked, onToggle, onView, emphasis = true, compact = false }) {
   return (
     <View style={styles.row}>
       <Pressable
@@ -15,7 +16,9 @@ export default function CheckboxRow({ label, checked, onToggle, onView, emphasis
         <View style={[styles.box, checked && styles.boxChecked]}>
           {checked ? <Text style={styles.check}>✓</Text> : null}
         </View>
-        <Text style={[styles.label, { fontFamily: emphasis ? fonts.medium : fonts.regular }]}>{label}</Text>
+        <Text style={[styles.label, compact && styles.labelCompact, { fontFamily: emphasis ? fonts.medium : fonts.regular }]}>
+          {label}
+        </Text>
       </Pressable>
       {onView ? (
         <Pressable accessibilityRole="link" accessibilityLabel={`${label} 보기`} onPress={onView} hitSlop={12}>
@@ -41,5 +44,6 @@ const styles = StyleSheet.create({
   boxChecked: { backgroundColor: colors.action.primary, borderColor: colors.action.primary },
   check: { ...typography.button, color: colors.text.onPrimary, lineHeight: 20 },
   label: { flex: 1, fontSize: 15, color: colors.text.primary },
+  labelCompact: { fontSize: 14, lineHeight: 22 },
   view: { ...typography.label, fontFamily: fonts.regular, color: colors.text.secondary },
 });

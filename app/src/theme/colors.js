@@ -8,6 +8,7 @@ export const colors = {
     default: '#FFFFFF',
     accent: '#E8F0EB',
     subtle: '#F5F6F7',
+    track: '#F0F2EE', // '한 분 / 두 분' 선택 바탕, 안내 카드
   },
   text: {
     primary: '#252B2A',
@@ -23,7 +24,7 @@ export const colors = {
   },
   border: {
     default: '#D7DDD5',
-    focus: '#000000', // 비어 있거나 입력 중인 칸의 테두리
+    focus: '#A3AFA7', // 입력 중인 칸의 테두리 (사용자 조정: Figma 검정 → 연한 회녹색)
   },
   // 시트/대화상자 뒤의 어두운 막
   overlay: 'rgba(0, 0, 0, 0.45)',

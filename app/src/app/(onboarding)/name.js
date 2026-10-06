@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import BirthdayPickerSheet from '../../components/BirthdayPickerSheet';
 import Button from '../../components/Button';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import Divider from '../../components/Divider';
 import ScreenHeader from '../../components/ScreenHeader';
 import TextField from '../../components/TextField';
 import { useAuth } from '../../context/AuthContext';
@@ -74,6 +75,7 @@ export default function NameScreen() {
             helper="신문에는 '손녀 강보민'처럼 관계와 함께 실려요."
             inputProps={{ returnKeyType: 'done', autoComplete: 'name', textContentType: 'name' }}
           />
+          <Divider />
           <TextField
             label="생일 (선택)"
             value={birthday ? `${birthday.month}월 ${birthday.day}일` : ''}

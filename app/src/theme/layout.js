@@ -1,9 +1,9 @@
-// Figma 둥글기: 버튼·입력칸·카드 16, 확인창 8, 체크박스 4 (그 외 surface 12, control 8)
+// Figma 둥글기: 버튼·카드 16, 체크박스 4 (그 외 surface 12, control 8). 확인창은 Figma 8 → 16 (사용자 조정)
 export const radius = {
   control: 8,
   surface: 12,
   large: 16,
-  modal: 8,
+  modal: 16,
   checkbox: 4,
 };
 export const hairline = 1;

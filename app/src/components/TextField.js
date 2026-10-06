@@ -3,9 +3,10 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { colors, hairline, radius, typography } from '../theme';
 
 // Figma 입력칸: 라벨이 칸 안 위쪽에 있고 그 아래에 값(또는 안내 문구)이 있다.
-// - 칸이 비어 있거나 입력 중이면 검은 테두리, 값이 채워져 있고 입력 중이 아니면 테두리 없음.
+// - 평소에는 테두리가 없고, 눌러서 입력 중일 때만 연한 테두리가 생긴다 (사용자 조정).
 // - onPress 를 주면 글자를 직접 입력하지 않고 눌러서 시트를 여는 칸이 된다 (생일).
-// 높이는 항상 72 로 고정해서 값을 입력해도 아래 내용이 밀리지 않게 한다.
+// - select: 고르는 칸이면 값 뒤에 '▾' 를 붙인다 (성별, 관계).
+// 높이는 항상 80 으로 고정해서 테두리가 생기거나 값을 입력해도 아래 내용이 밀리지 않게 한다.
 export default function TextField({
   label,
   value,
@@ -13,12 +14,12 @@ export default function TextField({
   placeholder,
   onPress,
   helper,
+  select = false,
   inputProps,
 }) {
   const inputRef = useRef(null);
   const [focused, setFocused] = useState(false);
   const empty = !value;
-  const outlined = focused || empty;
 
   return (
     <View style={styles.group}>
@@ -29,11 +30,11 @@ export default function TextField({
         accessibilityLabel={onPress ? label : undefined}
         style={styles.wrapper}
       >
-        <View style={[styles.box, outlined && styles.boxOutlined]} />
+        <View style={[styles.box, focused && styles.boxFocused]} />
         <View style={styles.texts}>
           <Text style={styles.label}>{label}</Text>
           {onPress ? (
-            <Text style={[styles.value, empty && styles.placeholder]}>{empty ? placeholder : value}</Text>
+            <Text style={[styles.value, empty && styles.placeholder]} numberOfLines={1}>{(empty ? placeholder : value) + (select ? '  ▾' : '')}</Text>
           ) : (
             <TextInput
               ref={inputRef}
@@ -57,27 +58,27 @@ export default function TextField({
 
 const styles = StyleSheet.create({
   group: { gap: 12 },
-  wrapper: { height: 72, justifyContent: 'center' },
-  // 배경 상자: 테두리가 없을 때는 64 높이로 가운데, 있을 때는 72 전체
+  // 여백을 넉넉히 (사용자 조정: Figma 72 → 80, 좌우 16 → 20)
+  wrapper: { height: 80, justifyContent: 'center' },
   box: {
     position: 'absolute',
     left: 0,
     right: 0,
-    top: 4,
-    bottom: 4,
-    borderRadius: radius.large,
+    top: 0,
+    bottom: 0,
+    borderRadius: radius.surface,
     backgroundColor: colors.surface.subtle,
     borderWidth: hairline,
     borderColor: 'transparent',
   },
-  boxOutlined: { top: 0, bottom: 0, borderColor: colors.border.focus },
-  texts: { paddingHorizontal: 16 },
+  boxFocused: { borderColor: colors.border.focus },
+  texts: { paddingHorizontal: 20 },
   label: { ...typography.label, color: colors.text.secondary },
   value: {
     ...typography.body,
     color: colors.text.primary,
     padding: 0,
-    marginTop: 2,
+    marginTop: 4,
     height: 26,
   },
   placeholder: { color: colors.text.placeholder },

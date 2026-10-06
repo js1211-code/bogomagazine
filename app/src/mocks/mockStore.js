@@ -30,3 +30,10 @@ export function setCurrentProvider(provider) {
 export function getCurrentAccount() {
   return currentProvider ? accounts[currentProvider] : null;
 }
+
+// ── 가족방 ──────────────────────────────────────────────
+// 가족방 목록. 각 항목: { group, members: [userId], recipients, relationshipByUser, deliveryAddress, inviteCode, requestKey }
+export const groups = [];
+
+// 개발 중 실패 화면을 확인하고 싶을 때 true 로 바꾼다 (가족방 만들기가 항상 실패한다)
+export const SIMULATE_CREATE_FAILURE = false;

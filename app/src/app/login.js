@@ -148,15 +148,22 @@ export default function LoginScreen() {
       </View>
 
       <View style={styles.actions}>
+        {/* 동의하면 연두 배경 + '동의했어요' 로 바뀐다. 다시 눌러 동의 내용을 바꿀 수 있다. */}
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="약관 동의 열기"
+          accessibilityLabel={consent ? '약관 동의 완료, 동의 내용 다시 보기' : '약관 동의 열기'}
           onPress={() => setSheetOpen(true)}
-          style={styles.consentCard}
+          style={[styles.consentCard, consent && styles.consentCardDone]}
         >
-          <Text style={styles.consentTitle}>{'서비스 이용을 위해\n약관에 동의해주세요.'}</Text>
+          <Text style={styles.consentTitle}>
+            {consent ? '✓ 서비스 이용 약관에 동의했어요.' : '서비스 이용을 위해\n약관에 동의해주세요.'}
+          </Text>
           <View style={styles.consentRow}>
-            <Text style={styles.consentSummary}>필수 약관 3개 · 선택 약관 1개</Text>
+            <Text style={[styles.consentSummary, consent && styles.consentSummaryDone]}>
+              {consent
+                ? `필수 약관 3개${consent.researchConsented ? ' · 선택 약관 1개' : ''} 동의`
+                : '필수 약관 3개 · 선택 약관 1개'}
+            </Text>
             <View style={styles.chevronRight} />
           </View>
         </Pressable>
@@ -196,6 +203,8 @@ const styles = StyleSheet.create({
   consentTitle: { fontFamily: fonts.medium, fontSize: 15, lineHeight: 22, color: colors.text.primary },
   consentRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   consentSummary: { ...typography.caption, color: colors.text.secondary },
+  consentCardDone: { backgroundColor: colors.surface.accent },
+  consentSummaryDone: { color: colors.action.primary },
   // '>' 모양: 테두리 두 변을 45도 돌린다
   chevronRight: {
     width: 7,
