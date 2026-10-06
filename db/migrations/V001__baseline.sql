@@ -21,7 +21,8 @@ CREATE TABLE app_user (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     email       text,                  -- 카카오: 동의 안 하면 NULL / 애플: 릴레이 주소일 수 있음
     name        text,                  -- 애플은 최초 로그인 때만 제공 -> 없을 수 있음
-    -- 프로필(PRF-01). 사진은 카카오 프로필이 기본값, 수정 가능. 생일은 월·일만, 선택 입력(사용처 미정)
+    -- 프로필(PRF-01). 사진은 받지 않는다(1005 결정) - photo_key는 당분간 미사용(캐릭터 PRF-05로 대체 예정, 설계 미확정이라 컬럼은 아직 안 둠).
+    -- 생일은 월·일만, 선택 입력. 지면 생일 안내(NEWS-07, 마감일부터 30일 이내)에 쓴다
     photo_key   text,
     birth_month int CHECK (birth_month BETWEEN 1 AND 12),
     birth_day   int CHECK (birth_day BETWEEN 1 AND 31),
@@ -210,18 +211,14 @@ CREATE TABLE family_block (
 );
 
 -- 조부모님 배송지. 조부모님은 앱에 로그인하지 않고 신문으로 받으시므로 주소만 저장한다.
+-- 수신자(사람) 정보는 recipient 테이블에 1~2행으로 따로 둔다(1005 결정, 부부는 두 분을 각자 입력받음 - RCV-01/FAM-01).
 -- 주문(print_order)에는 주문 시점의 주소를 복사해 두므로, 여기서 주소를 고치거나 지워도 이미 보낸 주문의 기록은 바뀌지 않는다.
 CREATE TABLE delivery_address (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id        uuid NOT NULL REFERENCES family_group(id) ON DELETE CASCADE,
     label           text NOT NULL,          -- 예: 친할머니·친할아버지 댁
-    recipient_name  text NOT NULL,
     recipient_phone bytea,                  -- pgcrypto pgp_sym_encrypt() 로 암호화. 키는 앱이 관리(DELIVERY_PII_KEY), DB 에는 없음
-    -- 수신자(조부모) 정보 (RCV-01): 호칭 결정에 성별이 필요하다(기술 필수). 부부 수신이면 성별을 안 쓰고
-    -- 호칭 대응표의 "부부 수신" 칸을 쓴다. 사진은 선택 입력(O-16 결정, 1004) - NULL 허용은 그대로 둔다
-    recipient_type  text NOT NULL DEFAULT 'single' CHECK (recipient_type IN ('single', 'couple')),
-    recipient_gender text CHECK (recipient_gender IN ('female', 'male')),
-    recipient_photo_key text,
+    recipient_type  text NOT NULL DEFAULT 'single' CHECK (recipient_type IN ('single', 'couple')),  -- recipient 행 수(1 또는 2)와 맞아야 한다 (R__005 트리거)
     postal_code     text NOT NULL,
     address_line1   bytea NOT NULL,          -- 암호화 (recipient_phone 과 같은 방식)
     address_line2   bytea,
@@ -229,8 +226,18 @@ CREATE TABLE delivery_address (
     created_by      uuid NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now(),
-    CHECK (recipient_type = 'couple' OR recipient_gender IS NOT NULL),
     FOREIGN KEY (group_id, created_by) REFERENCES family_member (group_id, user_id) DEFERRABLE INITIALLY DEFERRED
+);
+
+-- 수신자(조부모) 한 명 (RCV-01). 1인이면 1행(display_order=1), 부부면 2행. 성별은 호칭 결정에 필수(기술 필수).
+-- 사진은 받지 않는다(O-16, 1004에서 "선택 입력"으로 뒀다가 1005에서 다시 "안 받음"으로 바뀜) - 캐릭터(PRF-05)로 대체 예정이나 설계 미확정이라 컬럼 없음
+CREATE TABLE recipient (
+    id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    delivery_address_id  uuid NOT NULL REFERENCES delivery_address(id) ON DELETE CASCADE,
+    display_order        int NOT NULL CHECK (display_order IN (1, 2)),
+    name                 text NOT NULL,
+    gender               text NOT NULL CHECK (gender IN ('female', 'male')),
+    UNIQUE (delivery_address_id, display_order)
 );
 
 -- 배송지 열람/다운로드 기록. 운영자(operator)가 Admin 페이지에서 봤을 때만 남는다 (ADM-01: 배송지는 Admin에서만 열람)
@@ -621,7 +628,7 @@ CREATE TABLE print_order (
     print_job_id        uuid NOT NULL REFERENCES print_job(id),
     delivery_address_id uuid REFERENCES delivery_address(id) ON DELETE SET NULL,   -- 어느 배송지에서 복사했는지 (참고용)
     ordered_by          uuid NOT NULL REFERENCES app_user(id),
-    recipient_name      text NOT NULL,
+    recipient_name      text NOT NULL,       -- 배송지의 recipient(1~2명)를 합친 문자열로 앱이 채운다 (예: "김가상·김가상2")
     recipient_phone     bytea,                  -- delivery_address 와 같은 방식(pgcrypto)으로 암호화해서 복사
     postal_code         text NOT NULL,
     address_line1       bytea NOT NULL,          -- delivery_address 와 같은 방식(pgcrypto)으로 암호화해서 복사
@@ -698,7 +705,8 @@ COMMENT ON TABLE family_group            IS 'module:groups | 가족 그룹. 방�
 COMMENT ON TABLE family_member           IS 'module:groups | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다';
 COMMENT ON TABLE family_invite           IS 'module:groups | 카카오톡 초대 링크(토큰 해시). 영구 링크, 가족마다 1개, 방장만 만든다(FAM-05, 1004 결정)';
 COMMENT ON TABLE family_block            IS 'module:groups | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가';
-COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지 + 수신자(성별·사진·1인/부부) 정보. 주문에는 복사본을 남긴다';
+COMMENT ON TABLE delivery_address        IS 'module:groups | 조부모님 배송지(우편 주소, 암호화). 수신자 정보는 recipient 테이블. 주문에는 복사본을 남긴다';
+COMMENT ON TABLE recipient               IS 'module:groups | 배송지의 수신자 1~2명(1인/부부, RCV-01). 이름·성별만(사진은 안 받음, 1005 결정)';
 COMMENT ON TABLE delivery_address_access_log IS 'module:groups | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01)';
 COMMENT ON TABLE template                IS 'module:templates | 불변 버전의 판형 템플릿과 규모 제약(사진/페이지 수)';
 COMMENT ON TABLE page_master             IS 'module:templates | 페이지 마스터(슬롯 배치 정의)';

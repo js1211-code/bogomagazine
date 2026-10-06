@@ -14,7 +14,7 @@
 flowchart LR
     identity["identity<br/>5 tables"]
     templates["templates<br/>4 tables"]
-    groups["groups<br/>6 tables"]
+    groups["groups<br/>7 tables"]
     issues["issues<br/>3 tables"]
     feed["feed<br/>11 tables"]
     layout["layout<br/>4 tables"]
@@ -106,6 +106,7 @@ erDiagram
     "delivery_address" |o--o{ "print_order" : "delivery_address_id (set null)"
     "app_user" ||--o{ "print_order" : "ordered_by"
     "print_job" ||--o{ "print_order" : "print_job_id"
+    "delivery_address" ||--o{ "recipient" : "delivery_address_id (cascade)"
     "app_user" ||--o{ "report" : "reporter_id"
     "operator" |o--o{ "report" : "resolved_by"
     "style" |o--o{ "style" : "based_on"
@@ -337,15 +338,13 @@ erDiagram
     "family_group" ||--o{ "post" : "group_id (cascade)"
     "family_member" ||--o{ "post" : "group_id, author_id"
     "delivery_address" |o--o{ "print_order" : "delivery_address_id (set null)"
+    "delivery_address" ||--o{ "recipient" : "delivery_address_id (cascade)"
     "delivery_address" {
         uuid id PK
         uuid group_id FK
         text label
-        text recipient_name
         bytea recipient_phone
         text recipient_type
-        text recipient_gender
-        text recipient_photo_key
         text postal_code
         bytea address_line1
         bytea address_line2
@@ -391,6 +390,13 @@ erDiagram
         text relationship
         timestamptz joined_at
         timestamptz left_at
+    }
+    "recipient" {
+        uuid id PK
+        uuid delivery_address_id FK
+        int display_order
+        text name
+        text gender
     }
     "app_user" {
         uuid id PK
@@ -950,12 +956,13 @@ erDiagram
 | templates | `page_master` | 5 | 페이지 마스터(슬롯 배치 정의) |
 | templates | `style` | 6 | 문단/글자 스타일(상속 구조) |
 | templates | `template` | 12 | 불변 버전의 판형 템플릿과 규모 제약(사진/페이지 수) |
-| groups | `delivery_address` | 15 | 조부모님 배송지 + 수신자(성별·사진·1인/부부) 정보. 주문에는 복사본을 남긴다 |
+| groups | `delivery_address` | 12 | 조부모님 배송지(우편 주소, 암호화). 수신자 정보는 recipient 테이블. 주문에는 복사본을 남긴다 |
 | groups | `delivery_address_access_log` | 5 | 배송지 열람/다운로드 기록. 운영자(operator)가 봤을 때만 남는다 (ADM-01) |
 | groups | `family_block` | 4 | 방장이 내보낸 계정 차단 목록(FAM-09/10). 같은 링크로 재합류 불가 |
 | groups | `family_group` | 8 | 가족 그룹. 방장(owner_id), 신문 제호(newsletter_title, FAM-03)와 마감 정책(마감일, 타임존, 미달 시 자동 미발행) |
 | groups | `family_invite` | 5 | 카카오톡 초대 링크(토큰 해시). 영구 링크, 가족마다 1개, 방장만 만든다(FAM-05, 1004 결정) |
 | groups | `family_member` | 6 | 그룹 구성원. 수신자와의 관계(호칭용)를 가족 단위로 저장. 나가도 행은 남기고 left_at 만 채운다 |
+| groups | `recipient` | 5 | 배송지의 수신자 1~2명(1인/부부, RCV-01). 이름·성별만(사진은 안 받음, 1005 결정) |
 | issues | `issue` | 18 | 월간 호. 그 달의 게시물을 모아 만든 결과물. 상태는 change_issue_status()로만 바꾼다 |
 | issues | `issue_status_history` | 8 | 호 상태 변경 이력. changed_by(가족) 또는 operator_id(운영자) 중 하나만 채워짐, 둘 다 NULL이면 배치가 자동 변경 |
 | issues | `issue_status_transition` | 3 | 허용된 상태 전이 표 |

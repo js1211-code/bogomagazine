@@ -192,8 +192,9 @@ DECLARE
   v_job uuid; v_addr2 uuid; v_order uuid;
 BEGIN
   INSERT INTO print_job (issue_id, run_id, override_seq, status) VALUES (pg_temp.fx('a'), pg_temp.fx('ra1'), 0, 'ready') RETURNING id INTO v_job;
-  INSERT INTO delivery_address (group_id, label, recipient_name, recipient_gender, postal_code, address_line1, created_by)
-  VALUES (pg_temp.fx('g2'), '다른 집 조부모', '박가상', 'female', '00009', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), pg_temp.fx('u3')) RETURNING id INTO v_addr2;
+  INSERT INTO delivery_address (group_id, label, postal_code, address_line1, created_by)
+  VALUES (pg_temp.fx('g2'), '다른 집 조부모', '00009', pgp_sym_encrypt('어딘가', 'dev-only-change-me'), pg_temp.fx('u3')) RETURNING id INTO v_addr2;
+  INSERT INTO recipient (delivery_address_id, display_order, name, gender) VALUES (v_addr2, 1, '박가상', 'female');
 
   BEGIN
     INSERT INTO print_order (print_job_id, delivery_address_id, ordered_by, recipient_name, postal_code, address_line1)
@@ -215,10 +216,13 @@ BEGIN
   END;
 
   INSERT INTO print_order (print_job_id, delivery_address_id, ordered_by, recipient_name, recipient_phone, postal_code, address_line1)
-  SELECT v_job, id, pg_temp.fx('u1'), recipient_name, recipient_phone, postal_code, address_line1 FROM delivery_address WHERE id = e1
+  SELECT v_job, a.id, pg_temp.fx('u1'),
+         (SELECT string_agg(r.name, '·' ORDER BY r.display_order) FROM recipient r WHERE r.delivery_address_id = a.id),
+         a.recipient_phone, a.postal_code, a.address_line1
+    FROM delivery_address a WHERE a.id = e1
   RETURNING id INTO v_order;
   DELETE FROM delivery_address WHERE id = e1;
-  ASSERT (SELECT delivery_address_id IS NULL AND recipient_name = '김가상'
+  ASSERT (SELECT delivery_address_id IS NULL AND recipient_name = '김가상·김가상2'
             AND pgp_sym_decrypt(address_line1, 'dev-only-change-me') LIKE '서울%' FROM print_order WHERE id = v_order),
          'T109 배송지 삭제 후 주문 기록';
 END $$;
