@@ -1100,7 +1100,8 @@ paths:
       description: |
         인쇄용 PDF가 아니라 서버가 따로 만든 **열람용 페이지 이미지**(면마다 1장, '할머니께만' 블러를
         서버에서 입힌 것, 작성자 본인에게도 블러)를 돌려준다. 앱은 이 이미지를 책처럼 한 면씩 넘겨
-        보여준다(리플로우 없음, 종이 지면과 같은 모양). 발송 완료 전에는 404. 다운로드·공유는 제공하지
+        보여준다(리플로우 없음, 종이 지면과 같은 모양). 발송 완료 전에는 409(NOT_SENT) — 호는 존재하지만
+        아직 열람할 수 없는 상태라 404(리소스 없음)보다 409가 맞다. 다운로드·공유는 제공하지
         않는다(앱 안에서만 보기). **호출할 때마다 열람 기록이 자동으로 남는다(M-12, 멱등 아님)** —
         별도 view 엔드포인트는 두지 않는다. 앱이 빠뜨리거나 중복 호출하면 지표가 어긋나므로 조회
         자체에 기록을 묶었다.
@@ -1124,7 +1125,11 @@ paths:
                         pageNo: { type: integer }
                         imageUrl: { type: string, format: uri, description: "만료되는 서명 URL(NFR-08)" }
                   expiresAt: { type: string, format: date-time, description: "imageUrl 공통 만료 시각" }
-        "404": { description: 아직 발송 전 }
+        "409":
+          description: "아직 발송 완료 전 (NOT_SENT)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ===================== Admin =====================
   /admin/auth/login:
@@ -1397,9 +1402,11 @@ paths:
       tags: [AdminCompose]
       summary: 인쇄용 PDF 일괄 다운로드 (ADM-04, 인쇄소 전달용)
       description: |
-        여러 호의 인쇄용 PDF를 zip으로 묶어 받는다. 다운로드하면 그 호들의 `printDownloaded`
-        마커가 자동으로 켜진다(부작용이 있어 GET이 아니라 POST). 배송 주문 상태(발송/추적)는
-        택배 API 연동이 없어(PUB-03) API로 추적하지 않는다 — 배송지는 아래 엑셀로만 받는다.
+        여러 호의 인쇄용 PDF를 zip으로 묶어 받는다. 각 호는 `IN_REVIEW`여야 하며(= 인쇄용 PDF가
+        준비된 상태, `GET .../pdf`와 같은 사전조건), 하나라도 아니면 그 요청 전체를 거부한다(409).
+        다운로드하면 그 호들의 `printDownloaded` 마커가 자동으로 켜진다(부작용이 있어 GET이 아니라
+        POST). 배송 주문 상태(발송/추적)는 택배 API 연동이 없어(PUB-03) API로 추적하지 않는다 —
+        배송지는 아래 엑셀로만 받는다.
       security: [{ operatorBearer: [] }]
       requestBody:
         required: true
@@ -1424,6 +1431,12 @@ paths:
                   downloadUrl: { type: string, format: uri }
                   expiresAt: { type: string, format: date-time }
                   count: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: "issueIds 중 IN_REVIEW가 아닌 호가 있음 (NOT_IN_REVIEW)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /admin/print/addresses.xlsx:
     get:
@@ -1659,6 +1672,29 @@ components:
         printDownloaded: { type: boolean, description: "POST /admin/print/pdf-exports 로 다운로드하면 자동으로 켜짐" }
         printDownloadedAt: { type: string, format: date-time, nullable: true }
 
+    LayoutRunSummary:
+      type: object
+      description: "조판 워커 실행 1회 요약 (DB layout_run). 운영자 전용"
+      properties:
+        runNo: { type: integer, description: "호별 조판 회차, 1부터" }
+        attempt: { type: integer, description: "같은 회차 안에서의 재시도 횟수" }
+        status: { type: string, enum: [queued, running, done, failed, superseded] }
+        failureCode:
+          type: string
+          nullable: true
+          enum: [input_invalid, no_content, timeout, render_failed, storage_error, worker_lost]
+          description: "status=failed일 때만. input_invalid/no_content는 재시도해도 같은 결과라 자동 재시도 대상에서 빠진다"
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+
+    PrintJobSummary:
+      type: object
+      description: "인쇄용 PDF 생성 작업 요약 (DB print_job). 운영자 전용"
+      properties:
+        status: { type: string, enum: [queued, rendering, preflight_failed, ready, failed] }
+        pdfReady: { type: boolean, description: "status=ready와 동일(조회 편의용 — GET .../pdf, pdf-exports의 사전조건)" }
+        createdAt: { type: string, format: date-time }
+
     SignupConsent:
       type: object
       description: |
@@ -1814,6 +1850,14 @@ components:
         phase: { $ref: "#/components/schemas/IssuePhase", description: "운영자 전용 (AdminIssues/AdminCompose 응답에만 채움)" }
         displayState: { $ref: "#/components/schemas/DisplayState", description: "가족에게 보여줄 때 쓰는 값" }
         markers: { allOf: [{ $ref: "#/components/schemas/IssueMarkers" }], nullable: true, description: "운영자 전용" }
+        latestRun:
+          allOf: [{ $ref: "#/components/schemas/LayoutRunSummary" }]
+          nullable: true
+          description: "최신 조판 실행 요약 (운영자 전용, AdminIssues 상세/목록 응답에만 채움). 조판이 한 번도 돈 적 없으면 null"
+        printJob:
+          allOf: [{ $ref: "#/components/schemas/PrintJobSummary" }]
+          nullable: true
+          description: "최신 인쇄 작업 상태 (운영자 전용). 아직 안 만들어졌으면 null"
         closeAt: { type: string, format: date-time }
         closedAt: { type: string, format: date-time, nullable: true }
         progress:
