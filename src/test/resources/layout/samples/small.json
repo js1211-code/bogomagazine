@@ -75,11 +75,6 @@
           "comments": []
         }
       ]
-    },
-    {
-      "order": 2,
-      "question": { "id": "q2", "corner_name": "요즘 이야기", "print_body": "요즘 즐겨 드시는 간식은?" },
-      "answers": []
     }
   ],
 

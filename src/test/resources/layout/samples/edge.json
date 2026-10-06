@@ -74,11 +74,6 @@
           ]
         }
       ]
-    },
-    {
-      "order": 2,
-      "question": { "id": "q-empty", "corner_name": "요즘 이야기", "print_body": "요즘 즐겨 보시는 프로그램은?" },
-      "answers": []
     }
   ],
 
